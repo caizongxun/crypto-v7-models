@@ -9,7 +9,7 @@ warnings.filterwarnings('ignore')
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras.layers import LSTM, Bidirectional, Dense, Dropout, Input
-from tensorflow.keras.models import Sequential
+from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
@@ -177,11 +177,14 @@ class DataPreprocessor:
     def create_sequences(self, data, sequence_length=None):
         if sequence_length is None:
             sequence_length = self.sequence_length
-        X, y = [], []
+        X, y_open, y_close, y_high, y_low = [], [], [], [], []
         for i in range(len(data) - sequence_length):
             X.append(data[i:i+sequence_length])
-            y.append(data[i+sequence_length, 0])
-        return np.array(X), np.array(y)
+            y_open.append(data[i+sequence_length, 1])
+            y_close.append(data[i+sequence_length, 0])
+            y_high.append(data[i+sequence_length, 2])
+            y_low.append(data[i+sequence_length, 3])
+        return np.array(X), np.array(y_open), np.array(y_close), np.array(y_high), np.array(y_low)
 
 class CryptoV7Model:
     def __init__(self, sequence_length=60, features_dim=13):
@@ -190,30 +193,72 @@ class CryptoV7Model:
         self.model = None
     
     def build_model(self):
-        self.model = Sequential([
-            Bidirectional(LSTM(128, return_sequences=True, activation='relu'), input_shape=(self.sequence_length, self.features_dim)),
-            Dropout(0.2),
-            Bidirectional(LSTM(64, return_sequences=True, activation='relu')),
-            Dropout(0.2),
-            Bidirectional(LSTM(32, return_sequences=False, activation='relu')),
-            Dropout(0.2),
-            Dense(64, activation='relu'),
-            Dense(32, activation='relu'),
-            Dense(1)
-        ])
-        self.model.compile(optimizer=Adam(learning_rate=0.001), loss='mse', metrics=['mae'])
+        input_layer = Input(shape=(self.sequence_length, self.features_dim))
+        
+        bi_lstm1 = Bidirectional(LSTM(128, return_sequences=True, activation='relu'))(input_layer)
+        dropout1 = Dropout(0.2)(bi_lstm1)
+        
+        bi_lstm2 = Bidirectional(LSTM(64, return_sequences=True, activation='relu'))(dropout1)
+        dropout2 = Dropout(0.2)(bi_lstm2)
+        
+        bi_lstm3 = Bidirectional(LSTM(32, return_sequences=False, activation='relu'))(dropout2)
+        dropout3 = Dropout(0.2)(bi_lstm3)
+        
+        dense1 = Dense(64, activation='relu')(dropout3)
+        dense2 = Dense(32, activation='relu')(dense1)
+        
+        open_output = Dense(1, name='open')(dense2)
+        close_output = Dense(1, name='close')(dense2)
+        high_output = Dense(1, name='high')(dense2)
+        low_output = Dense(1, name='low')(dense2)
+        
+        self.model = Model(inputs=input_layer, outputs=[open_output, close_output, high_output, low_output])
+        
+        self.model.compile(
+            optimizer=Adam(learning_rate=0.001),
+            loss={'open': 'mse', 'close': 'mse', 'high': 'mse', 'low': 'mse'},
+            loss_weights={'open': 1.0, 'close': 1.0, 'high': 0.8, 'low': 0.8},
+            metrics=['mae']
+        )
+        
         return self.model
     
-    def train(self, X_train, y_train, X_val, y_val, epochs=100, batch_size=32):
+    def train(self, X_train, y_train_open, y_train_close, y_train_high, y_train_low, 
+              X_val, y_val_open, y_val_close, y_val_high, y_val_low, epochs=100, batch_size=32):
         callbacks = [
             EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True),
             ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
         ]
-        history = self.model.fit(X_train, y_train, validation_data=(X_val, y_val), epochs=epochs, batch_size=batch_size, callbacks=callbacks, verbose=0)
+        
+        y_train_dict = {
+            'open': y_train_open,
+            'close': y_train_close,
+            'high': y_train_high,
+            'low': y_train_low
+        }
+        
+        y_val_dict = {
+            'open': y_val_open,
+            'close': y_val_close,
+            'high': y_val_high,
+            'low': y_val_low
+        }
+        
+        history = self.model.fit(
+            X_train, y_train_dict,
+            validation_data=(X_val, y_val_dict),
+            epochs=epochs,
+            batch_size=batch_size,
+            callbacks=callbacks,
+            verbose=0
+        )
+        
         return history
     
     def predict(self, X):
-        return self.model.predict(X, verbose=0)
+        outputs = self.model.predict(X, verbose=0)
+        predictions = np.column_stack(outputs)
+        return predictions
     
     def save(self, filepath):
         if self.model:
@@ -242,22 +287,34 @@ class TrainingPipeline:
             return False
         preprocessor = DataPreprocessor(sequence_length=60)
         scaled_data, feature_cols = preprocessor.preprocess(df)
-        X, y = preprocessor.create_sequences(scaled_data)
+        X, y_open, y_close, y_high, y_low = preprocessor.create_sequences(scaled_data)
         if len(X) < 100:
             print('Insufficient sequences')
             return False
         split_idx = int(len(X) * 0.8)
         X_train, X_val = X[:split_idx], X[split_idx:]
-        y_train, y_val = y[:split_idx], y[split_idx:]
+        y_open_train, y_open_val = y_open[:split_idx], y_open[split_idx:]
+        y_close_train, y_close_val = y_close[:split_idx], y_close[split_idx:]
+        y_high_train, y_high_val = y_high[:split_idx], y_high[split_idx:]
+        y_low_train, y_low_val = y_low[:split_idx], y_low[split_idx:]
+        
         model = CryptoV7Model(sequence_length=60, features_dim=len(feature_cols))
         model.build_model()
-        history = model.train(X_train, y_train, X_val, y_val, epochs=100, batch_size=32)
+        history = model.train(
+            X_train, y_open_train, y_close_train, y_high_train, y_low_train,
+            X_val, y_open_val, y_close_val, y_high_val, y_low_val,
+            epochs=100, batch_size=32
+        )
+        
         model_path = os.path.join(self.output_dir, f'{symbol}_{timeframe}_v7.h5')
         model.save(model_path)
-        y_pred = model.predict(X_val).flatten()
+        
+        y_pred = model.predict(X_val)
+        y_val = np.column_stack([y_open_val, y_close_val, y_high_val, y_low_val])
         mse = mean_squared_error(y_val, y_pred)
         mae = mean_absolute_error(y_val, y_pred)
         mape = mean_absolute_percentage_error(y_val, y_pred)
+        
         metadata = {
             'symbol': symbol,
             'timeframe': timeframe,
