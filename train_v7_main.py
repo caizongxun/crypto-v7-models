@@ -19,13 +19,18 @@ from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, mean_absolute_percentage_error
 
-import yfinance as yf
-
 try:
     from binance.client import Client as BinanceClient
     HAS_BINANCE = True
 except:
+    print("Warning: python-binance not installed. Install with: pip install python-binance")
     HAS_BINANCE = False
+
+try:
+    import yfinance as yf
+    HAS_YFINANCE = True
+except ImportError:
+    HAS_YFINANCE = False
 
 try:
     import talib
@@ -56,9 +61,10 @@ class CryptoDataFetcher:
         os.makedirs(data_dir, exist_ok=True)
         if HAS_BINANCE:
             try:
-                self.binance_us_client = BinanceClient(tld='us', requests_params={"timeout": 10})
-            except:
-                pass
+                self.binance_us_client = BinanceClient(tld='us', requests_params={"timeout": 30})
+                print("✓ Binance US client initialized")
+            except Exception as e:
+                print(f"Warning: Could not initialize Binance US client: {e}")
     
     def fetch_from_binance_us(self, symbol, interval, limit=1000):
         if self.binance_us_client is None:
@@ -71,10 +77,13 @@ class CryptoDataFetcher:
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
             return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
-        except:
+        except Exception as e:
+            print(f"  Binance error: {str(e)[:50]}")
             return None
     
     def fetch_from_yfinance(self, symbol, interval, period):
+        if not HAS_YFINANCE:
+            return None
         try:
             df = yf.download(symbol, interval=interval, period=period, progress=False)
             if df.empty:
@@ -90,17 +99,19 @@ class CryptoDataFetcher:
             return None
     
     def get_data(self, symbol, timeframe, limit=10000):
+        # 優先使用 Binance US
         if self.binance_us_client:
             binance_interval = {'15m': '15m', '1h': '1h'}
             if timeframe in binance_interval:
                 try:
                     df = self.fetch_from_binance_us(symbol, timeframe, limit)
                     if df is not None and len(df) > 100:
-                        self.save_klines(symbol, timeframe, df, source='binance')
+                        self.save_klines(symbol, timeframe, df, source='binance_us')
                         return df
                 except:
                     pass
         
+        # 備用方案：yfinance
         yf_interval = {'15m': '15m', '1h': '1h'}
         yf_symbol = symbol.replace('USDT', '') if 'USDT' in symbol else symbol
         if timeframe in yf_interval:
@@ -178,8 +189,9 @@ class TechnicalIndicators:
         df['rsi'] = TechnicalIndicators.calculate_rsi(close)
         df['macd'], df['macd_signal'], df['macd_hist'] = TechnicalIndicators.calculate_macd(close)
         df['volatility'] = TechnicalIndicators.calculate_volatility(close)
-        df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-8)
-        df['bb_position'] = df['bb_position'].clip(0, 1)
+        # 修復 bb_position 計算 - 確保賦值的是單一列
+        bb_position = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-8)
+        df['bb_position'] = bb_position.clip(0, 1).values
         return df
 
 class DataPreprocessor:
