@@ -17,14 +17,19 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, mean_absolute_percentage_error
 
 import yfinance as yf
-from binance.client import Client
+
+try:
+    from binance.client import Client
+    HAS_BINANCE = True
+except:
+    HAS_BINANCE = False
 
 try:
     import talib
     HAS_TALIB = True
 except ImportError:
     HAS_TALIB = False
-    print('Warning: talib not available, using fallback implementations')
+    print('talib not available, using pandas calculations')
 
 print('TensorFlow version:', tf.__version__)
 print('GPU Available:', tf.config.list_physical_devices('GPU'))
@@ -34,17 +39,18 @@ class CryptoDataFetcher:
     
     def __init__(self):
         self.binance_client = None
-        try:
-            self.binance_client = Client()
-        except:
-            print('Binance client initialization skipped')
+        if HAS_BINANCE:
+            try:
+                self.binance_client = Client()
+            except:
+                pass
     
     def fetch_from_binance(self, symbol, interval, limit=10000):
         """Fetch from Binance US"""
+        if not HAS_BINANCE or self.binance_client is None:
+            return None
+        
         try:
-            if self.binance_client is None:
-                self.binance_client = Client()
-            
             klines = self.binance_client.get_historical_klines(
                 symbol, interval, limit=min(limit, 1000)
             )
@@ -62,13 +68,16 @@ class CryptoDataFetcher:
             
             return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
         except Exception as e:
-            print(f'Binance fetch error: {e}')
             return None
     
     def fetch_from_yfinance(self, symbol, interval, period):
         """Fetch from Yahoo Finance"""
         try:
             df = yf.download(symbol, interval=interval, period=period, progress=False)
+            
+            if df.empty:
+                return None
+            
             df.reset_index(inplace=True)
             
             if 'Date' in df.columns:
@@ -86,24 +95,29 @@ class CryptoDataFetcher:
             
             return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
         except Exception as e:
-            print(f'YFinance fetch error for {symbol}: {e}')
             return None
     
     def get_data(self, symbol, timeframe, limit=10000):
         """Unified interface to fetch data"""
-        binance_interval = {'15m': Client.KLINE_INTERVAL_15MINUTE,
-                           '1h': Client.KLINE_INTERVAL_1HOUR}
-        
-        if timeframe in binance_interval and 'USDT' in symbol:
-            df = self.fetch_from_binance(symbol, binance_interval[timeframe], limit)
-            if df is not None and len(df) > 0:
-                return df
+        if HAS_BINANCE and self.binance_client:
+            binance_interval = {'15m': '15m', '1h': '1h'}
+            if timeframe in binance_interval and 'USDT' in symbol:
+                try:
+                    df = self.fetch_from_binance(symbol, timeframe, limit)
+                    if df is not None and len(df) > 0:
+                        return df
+                except:
+                    pass
         
         yf_interval = {'15m': '15m', '1h': '1h'}
         yf_symbol = symbol.replace('USDT', '') if 'USDT' in symbol else symbol
         
         if timeframe in yf_interval:
-            df = self.fetch_from_yfinance(yf_symbol, yf_interval[timeframe], '180d')
+            if timeframe == '15m':
+                df = self.fetch_from_yfinance(yf_symbol, yf_interval[timeframe], '60d')
+            else:
+                df = self.fetch_from_yfinance(yf_symbol, yf_interval[timeframe], '180d')
+            
             if df is not None and len(df) > limit:
                 df = df.iloc[-limit:].reset_index(drop=True)
             return df
@@ -115,35 +129,42 @@ class TechnicalIndicators:
     
     @staticmethod
     def calculate_atr(high, low, close, period=14):
-        """Average True Range"""
-        if HAS_TALIB:
-            try:
-                return talib.ATR(high, low, close, timeperiod=period)
-            except:
-                pass
+        """Average True Range - Fixed version"""
+        try:
+            high = np.array(high).flatten()
+            low = np.array(low).flatten()
+            close = np.array(close).flatten()
+            
+            if HAS_TALIB:
+                try:
+                    return talib.ATR(high, low, close, timeperiod=period)
+                except:
+                    pass
+        except:
+            pass
         
         tr1 = high - low
-        tr2 = np.abs(high - np.concatenate([[close.iloc[0]], close.iloc[:-1].values]))
-        tr3 = np.abs(low - np.concatenate([[close.iloc[0]], close.iloc[:-1].values]))
-        tr = pd.concat([
-            pd.Series(tr1),
-            pd.Series(tr2),
-            pd.Series(tr3)
-        ], axis=1).max(axis=1)
-        return tr.rolling(window=period).mean()
+        tr2 = np.abs(high - np.concatenate([[close[0]], close[:-1]]))
+        tr3 = np.abs(low - np.concatenate([[close[0]], close[:-1]]))
+        tr = np.maximum(np.maximum(tr1, tr2), tr3)
+        
+        atr = pd.Series(tr).rolling(window=period).mean().values
+        return atr
     
     @staticmethod
     def calculate_bollinger_bands(close, period=20, num_std=2):
         """Bollinger Bands with upper, middle, lower bands"""
+        close = np.array(close).flatten()
+        
         if HAS_TALIB:
             try:
                 sma = talib.SMA(close, timeperiod=period)
             except:
-                sma = close.rolling(window=period).mean()
+                sma = pd.Series(close).rolling(window=period).mean().values
         else:
-            sma = close.rolling(window=period).mean()
+            sma = pd.Series(close).rolling(window=period).mean().values
         
-        std = close.rolling(window=period).std()
+        std = pd.Series(close).rolling(window=period).std().values
         upper = sma + (num_std * std)
         lower = sma - (num_std * std)
         bandwidth = (upper - lower) / sma
@@ -153,21 +174,25 @@ class TechnicalIndicators:
     @staticmethod
     def calculate_rsi(close, period=14):
         """Relative Strength Index"""
+        close = np.array(close).flatten()
+        
         if HAS_TALIB:
             try:
                 return talib.RSI(close, timeperiod=period)
             except:
                 pass
         
-        delta = close.diff()
+        delta = pd.Series(close).diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
         rs = gain / loss
-        return 100 - (100 / (1 + rs))
+        return (100 - (100 / (1 + rs))).values
     
     @staticmethod
     def calculate_macd(close):
         """MACD indicator"""
+        close = np.array(close).flatten()
+        
         if HAS_TALIB:
             try:
                 macd, signal, hist = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
@@ -175,36 +200,38 @@ class TechnicalIndicators:
             except:
                 pass
         
-        ema12 = close.ewm(span=12).mean()
-        ema26 = close.ewm(span=26).mean()
+        ema12 = pd.Series(close).ewm(span=12).mean().values
+        ema26 = pd.Series(close).ewm(span=26).mean().values
         macd = ema12 - ema26
-        signal = macd.ewm(span=9).mean()
+        signal = pd.Series(macd).ewm(span=9).mean().values
         hist = macd - signal
         return macd, signal, hist
     
     @staticmethod
     def calculate_volatility(close, period=20):
         """Historical volatility"""
-        log_returns = np.log(close / close.shift(1))
-        return log_returns.rolling(window=period).std()
+        close = np.array(close).flatten()
+        log_returns = np.log(close / np.concatenate([[close[0]], close[:-1]]))
+        return pd.Series(log_returns).rolling(window=period).std().values
     
     @staticmethod
     def add_all_indicators(df):
         """Add all technical indicators to dataframe"""
         df = df.copy()
-        close_series = df['close'].astype(float)
-        high_series = df['high'].astype(float)
-        low_series = df['low'].astype(float)
         
-        df['atr'] = TechnicalIndicators.calculate_atr(high_series, low_series, close_series)
+        close = df['close'].astype(float).values
+        high = df['high'].astype(float).values
+        low = df['low'].astype(float).values
+        
+        df['atr'] = TechnicalIndicators.calculate_atr(high, low, close)
         df['bb_upper'], df['bb_middle'], df['bb_lower'], df['bb_width'] = \
-            TechnicalIndicators.calculate_bollinger_bands(close_series)
-        df['rsi'] = TechnicalIndicators.calculate_rsi(close_series)
+            TechnicalIndicators.calculate_bollinger_bands(close)
+        df['rsi'] = TechnicalIndicators.calculate_rsi(close)
         df['macd'], df['macd_signal'], df['macd_hist'] = \
-            TechnicalIndicators.calculate_macd(close_series)
-        df['volatility'] = TechnicalIndicators.calculate_volatility(close_series)
+            TechnicalIndicators.calculate_macd(close)
+        df['volatility'] = TechnicalIndicators.calculate_volatility(close)
         
-        df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
+        df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-8)
         df['bb_position'] = df['bb_position'].clip(0, 1)
         
         return df
@@ -381,20 +408,18 @@ class TrainingPipeline:
     
     def train_single_model(self, symbol, timeframe, limit=10000):
         """Train model for single cryptocurrency and timeframe"""
-        print(f'Training {symbol} {timeframe}...')
+        print(f'Training {symbol} {timeframe}...', end=' ')
         
         df = self.fetcher.get_data(symbol, timeframe, limit)
         if df is None or len(df) < 100:
-            print(f'Insufficient data for {symbol} {timeframe}')
+            print('Insufficient data')
             return False
-        
-        print(f'  Data points: {len(df)}')
         
         df = TechnicalIndicators.add_all_indicators(df)
         df = df.dropna()
         
         if len(df) < 100:
-            print(f'  Insufficient data after indicators')
+            print('Insufficient data after indicators')
             return False
         
         preprocessor = DataPreprocessor(sequence_length=60)
@@ -402,7 +427,7 @@ class TrainingPipeline:
         X, y = preprocessor.create_sequences(scaled_data)
         
         if len(X) < 100:
-            print(f'  Insufficient sequences')
+            print('Insufficient sequences')
             return False
         
         split_idx = int(len(X) * 0.8)
@@ -412,7 +437,6 @@ class TrainingPipeline:
         model = CryptoV7Model(sequence_length=60, features_dim=len(feature_cols))
         model.build_model()
         
-        print(f'  Train: {len(X_train)}, Val: {len(X_val)}')
         history = model.train(X_train, y_train, X_val, y_val, epochs=100, batch_size=32)
         
         model_path = os.path.join(self.output_dir, f'{symbol}_{timeframe}_v7.h5')
@@ -438,8 +462,7 @@ class TrainingPipeline:
         }
         
         self.models_metadata[f'{symbol}_{timeframe}'] = metadata
-        
-        print(f'  Metrics - MSE: {mse:.6f}, MAE: {mae:.6f}, MAPE: {mape:.2f}%')
+        print(f'MAPE: {mape:.2f}%')
         
         return True
     
@@ -454,14 +477,13 @@ class TrainingPipeline:
                     if self.train_single_model(symbol, timeframe):
                         success_count += 1
                 except Exception as e:
-                    print(f'Error training {symbol} {timeframe}: {str(e)[:50]}')
+                    print(f'Error: {str(e)[:40]}')
         
         metadata_path = os.path.join(self.output_dir, 'metadata_v7.json')
         with open(metadata_path, 'w') as f:
             json.dump(self.models_metadata, f, indent=2)
         
         print(f'\nTraining completed: {success_count}/{total_count} models')
-        print(f'Metadata saved to {metadata_path}')
         return self.models_metadata
 
 if __name__ == '__main__':
