@@ -4,7 +4,7 @@
 
 Description:
     此檔案可視化 .keras 模型的預測結果，
-    將真實價格和預測價格繪製在同一個圖表上進行對比。
+    將真實價格和預測價格線製在同一個圖表上進行對比。
 
 Usage:
     python visualize_predictions.py \
@@ -16,7 +16,6 @@ Usage:
 Example:
     python visualize_predictions.py \
         --model_path /content/all_models/BTCUSDT_15m_v7.keras \
-        --klines_path /content/klines_data/BTCUSDT_15m_yfinance.csv \
         --symbol BTCUSDT_15m
 """
 
@@ -44,6 +43,7 @@ except ImportError:
 
 try:
     from sklearn.preprocessing import MinMaxScaler
+    from sklearn.metrics import mean_squared_error, mean_absolute_error
 except ImportError:
     print("Error: scikit-learn not installed. Run: pip install scikit-learn")
     sys.exit(1)
@@ -118,6 +118,68 @@ class TechnicalIndicators:
         )
         df["bb_position"] = df["bb_position"].clip(0, 1)
         return df
+
+
+class KlinesLocator:
+    """自動定位 K 線檔案"""
+
+    @staticmethod
+    def find_klines(symbol: str, timeframe: str, klines_dir: str = "/content/klines_data") -> Optional[str]:
+        """
+        自動尋找 K 線檔案
+
+        Args:
+            symbol (str): 幣種符號 (e.g., BTCUSDT)
+            timeframe (str): 時間框架 (e.g., 15m, 1h)
+            klines_dir (str): K 線目錄
+
+        Returns:
+            Optional[str]: 找到的檔案路徑，或 None
+        """
+        klines_path = Path(klines_dir)
+        if not klines_path.exists():
+            return None
+
+        # 尋找匹配的檔案
+        patterns = [
+            f"{symbol}_{timeframe}_*.csv",
+            f"{symbol}_{timeframe}.csv",
+        ]
+
+        for pattern in patterns:
+            matches = list(klines_path.glob(pattern))
+            if matches:
+                # 優先選擇 yfinance 檔案
+                for match in matches:
+                    if "yfinance" in match.name:
+                        return str(match)
+                # 如果沒有 yfinance，返回第一個匹配
+                return str(matches[0])
+
+        return None
+
+    @staticmethod
+    def list_available_klines(klines_dir: str = "/content/klines_data"):
+        """
+        列出所有可用的 K 線檔案
+
+        Args:
+            klines_dir (str): K 線目錄
+        """
+        klines_path = Path(klines_dir)
+        if not klines_path.exists():
+            print(f"K 線目錄不存在: {klines_dir}")
+            return
+
+        csv_files = list(klines_path.glob("*.csv"))
+        if not csv_files:
+            print(f"在 {klines_dir} 中找不到任何 CSV 檔案")
+            return
+
+        print(f"\n找到 {len(csv_files)} 個 K 線檔案:")
+        for f in sorted(csv_files):
+            file_size = f.stat().st_size / (1024 * 1024)  # MB
+            print(f"  - {f.name} ({file_size:.2f} MB)")
 
 
 class ModelVisualizer:
@@ -250,8 +312,6 @@ class ModelVisualizer:
         Returns:
             dict: 性能指標
         """
-        from sklearn.metrics import mean_squared_error, mean_absolute_error
-
         mse = mean_squared_error(actuals, predictions)
         mae = mean_absolute_error(actuals, predictions)
         rmse = np.sqrt(mse)
@@ -373,32 +433,40 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Visualize BTCUSDT 15m model
+  # Visualize BTCUSDT 15m model (auto-detect klines)
   python visualize_predictions.py \
     --model_path /content/all_models/BTCUSDT_15m_v7.keras \
-    --klines_path /content/klines_data/BTCUSDT_15m_yfinance.csv \
-    --output /tmp/btc_15m.png
+    --symbol BTCUSDT_15m
 
-  # Visualize ETHUSDT 1h model with custom title
+  # Visualize with custom klines path
   python visualize_predictions.py \
     --model_path /content/all_models/ETHUSDT_1h_v7.keras \
     --klines_path /content/klines_data/ETHUSDT_1h_yfinance.csv \
     --title "ETH Price Prediction (1h)" \
     --output /tmp/eth_1h.png
+
+  # List available klines
+  python visualize_predictions.py --list-klines
         """,
     )
 
     parser.add_argument(
         "--model_path",
         type=str,
-        required=True,
+        default=None,
         help="Path to .keras model file",
     )
     parser.add_argument(
         "--klines_path",
         type=str,
-        required=True,
-        help="Path to klines CSV file",
+        default=None,
+        help="Path to klines CSV file (auto-detect if not specified)",
+    )
+    parser.add_argument(
+        "--symbol",
+        type=str,
+        default=None,
+        help="Symbol to extract from model path (e.g., BTCUSDT_15m)",
     )
     parser.add_argument(
         "--output",
@@ -418,23 +486,61 @@ Examples:
         default=60,
         help="Sequence length (default: 60)",
     )
+    parser.add_argument(
+        "--list-klines",
+        action="store_true",
+        help="List available klines files",
+    )
+    parser.add_argument(
+        "--klines_dir",
+        type=str,
+        default="/content/klines_data",
+        help="Klines directory (default: /content/klines_data)",
+    )
 
     args = parser.parse_args()
 
-    # 驗證檔案存在
+    # 列出可用的 K 線檔案
+    if args.list_klines:
+        KlinesLocator.list_available_klines(args.klines_dir)
+        sys.exit(0)
+
+    # 驗證必需參數
+    if not args.model_path:
+        print("✗ Error: --model_path is required", file=sys.stderr)
+        print("Run with --list-klines to see available klines files")
+        sys.exit(1)
+
     if not Path(args.model_path).exists():
         print(f"✗ Model file not found: {args.model_path}", file=sys.stderr)
         sys.exit(1)
 
-    if not Path(args.klines_path).exists():
-        print(f"✗ Klines file not found: {args.klines_path}", file=sys.stderr)
+    # 自動偵測 K 線檔案
+    klines_path = args.klines_path
+    if not klines_path and args.symbol:
+        symbol, timeframe = args.symbol.rsplit("_", 1)
+        klines_path = KlinesLocator.find_klines(symbol, timeframe, args.klines_dir)
+        if klines_path:
+            print(f"✓ Auto-detected klines: {klines_path}")
+        else:
+            print(f"✗ Could not auto-detect klines for {args.symbol}", file=sys.stderr)
+            print(f"Available klines:")
+            KlinesLocator.list_available_klines(args.klines_dir)
+            sys.exit(1)
+    elif not klines_path:
+        print(f"✗ Error: --klines_path or --symbol is required", file=sys.stderr)
+        print(f"Run with --list-klines to see available klines files")
+        sys.exit(1)
+
+    if not Path(klines_path).exists():
+        print(f"✗ Klines file not found: {klines_path}", file=sys.stderr)
         sys.exit(1)
 
     try:
         # 建立可視化器
         visualizer = ModelVisualizer(
             model_path=args.model_path,
-            klines_path=args.klines_path,
+            klines_path=klines_path,
             sequence_length=args.sequence_length,
         )
 
