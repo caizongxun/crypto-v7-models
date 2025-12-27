@@ -217,7 +217,7 @@ class CryptoV7Model:
             optimizer=Adam(learning_rate=0.001),
             loss={'open': 'mse', 'close': 'mse', 'high': 'mse', 'low': 'mse'},
             loss_weights={'open': 1.0, 'close': 1.0, 'high': 0.8, 'low': 0.8},
-            metrics=['mae']
+            metrics={'open': 'mae', 'close': 'mae', 'high': 'mae', 'low': 'mae'}
         )
         
         return self.model
@@ -341,7 +341,6 @@ class TrainingPipeline:
                         success_count += 1
                 except Exception as e:
                     print(f'Error: {str(e)[:80]}')
-                    traceback.print_exc()
         metadata_path = os.path.join(self.output_dir, 'metadata_v7.json')
         with open(metadata_path, 'w') as f:
             json.dump(self.models_metadata, f, indent=2)
