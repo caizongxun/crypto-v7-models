@@ -1,7 +1,7 @@
 import os
 import json
 from pathlib import Path
-from huggingface_hub import HfApi, create_repo
+from huggingface_hub import HfApi
 
 class HuggingFaceUploader:
     def __init__(self, hf_token=None, repo_id="caizongxun/crypto-v7-models", models_dir='/content/all_models'):
@@ -21,28 +21,6 @@ class HuggingFaceUploader:
         self.models_dir = models_dir
         self.api = HfApi(token=self.hf_token)
     
-    def ensure_repo_exists(self):
-        """
-        確認 Hugging Face repo 存在，如果不存在則創建
-        """
-        try:
-            self.api.repo_info(repo_id=self.repo_id, repo_type="model")
-            print(f"✓ Repo {self.repo_id} already exists")
-        except Exception as e:
-            print(f"✗ Repo not found: {e}")
-            print(f"Creating repo {self.repo_id}...")
-            try:
-                create_repo(
-                    repo_id=self.repo_id,
-                    repo_type="model",
-                    token=self.hf_token,
-                    private=False
-                )
-                print(f"✓ Repo {self.repo_id} created successfully")
-            except Exception as create_error:
-                print(f"✗ Failed to create repo: {create_error}")
-                raise
-    
     def get_keras_models(self):
         """
         獲取本地 all_models 目錄中所有的 .keras 模型檔案
@@ -56,10 +34,13 @@ class HuggingFaceUploader:
         
         keras_models = list(models_path.glob('*.keras'))
         print(f"\nFound {len(keras_models)} .keras models:")
+        total_size = 0
         for model in sorted(keras_models):
             file_size = model.stat().st_size / (1024**2)  # 轉換為 MB
+            total_size += file_size
             print(f"  - {model.name} ({file_size:.2f} MB)")
         
+        print(f"\nTotal size: {total_size:.2f} MB")
         return sorted(keras_models)
     
     def upload_folder(self, remote_folder="models_v7"):
@@ -75,20 +56,12 @@ class HuggingFaceUploader:
         print(f"Remote folder: {remote_folder}")
         print(f"{'='*70}\n")
         
-        # 確認 repo 存在
-        self.ensure_repo_exists()
-        
         # 獲取所有 .keras 模型
         keras_models = self.get_keras_models()
         
         if not keras_models:
             print("\n✗ No .keras models found to upload")
             return False
-        
-        # 計算總大小
-        total_size = sum(model.stat().st_size for model in keras_models)
-        total_size_mb = total_size / (1024**2)
-        print(f"\nTotal size to upload: {total_size_mb:.2f} MB")
         
         # 上傳整個資料夾
         print(f"\nUploading {len(keras_models)} models as a folder...\n")
@@ -101,7 +74,7 @@ class HuggingFaceUploader:
                 repo_id=self.repo_id,
                 repo_type="model",
                 path_in_repo=remote_folder,
-                ignore_patterns=["*.py", "*.md", "*.txt"]  # 只上傳 .keras 檔案
+                ignore_patterns=["*.py", "*.md", "*.txt", "*.json", "*.csv"]  # 只上傳 .keras 檔案
             )
             
             print(f"✓")
@@ -118,7 +91,6 @@ class HuggingFaceUploader:
         
         if successful:
             print(f"✓ Successfully uploaded {len(keras_models)} models")
-            print(f"✓ Total size: {total_size_mb:.2f} MB")
             print(f"\n✓ All models available at:")
             print(f"  https://huggingface.co/{self.repo_id}/tree/main/{remote_folder}")
         else:
