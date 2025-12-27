@@ -289,7 +289,14 @@ class CryptoV7Model:
             self.model.save(filepath)
 
 class TrainingPipeline:
-    CRYPTO_PAIRS = {'BTC': 'BTCUSDT', 'ETH': 'ETHUSDT', 'BNB': 'BNBUSDT', 'XRP': 'XRPUSDT', 'ADA': 'ADAUSDT', 'DOGE': 'DOGEUSDT', 'SOL': 'SOLUSDT', 'LINK': 'LINKUSDT', 'MATIC': 'MATICUSDT', 'AVAX': 'AVAXUSDT', 'UNI': 'UNIUSDT', 'LTC': 'LTCUSDT', 'BCH': 'BCHUSDT', 'ETC': 'ETCUSDT', 'XLM': 'XLMUSDT', 'VET': 'VETUSDT', 'FIL': 'FILUSDT', 'THETA': 'THETAUSDT', 'NEAR': 'NEARUSDT', 'APE': 'APEUSDT'}
+    # 修改：只訓練 5 個幣種
+    CRYPTO_PAIRS = {
+        'BTC': 'BTCUSDT',
+        'ETH': 'ETHUSDT',
+        'BNB': 'BNBUSDT',
+        'XRP': 'XRPUSDT',
+        'ADA': 'ADAUSDT'
+    }
     TIMEFRAMES = ['15m', '1h']
     
     def __init__(self, output_dir='/content/all_models', klines_dir='/content/klines_data'):
@@ -305,7 +312,7 @@ class TrainingPipeline:
         print(f'  ← Fetching klines...', end=' ', flush=True)
         df = self.fetcher.get_data(symbol, timeframe, limit)
         if df is None or len(df) < 100:
-            print('❌ No data')
+            print('✗ No data')
             return False
         print(f'✓ Got {len(df)} klines')
         
@@ -313,7 +320,7 @@ class TrainingPipeline:
         df = TechnicalIndicators.add_all_indicators(df)
         df = df.dropna()
         if len(df) < 100:
-            print('❌ Insufficient data')
+            print('✗ Insufficient data')
             return False
         print(f'✓ {len(df)} rows after cleanup')
         
@@ -322,7 +329,7 @@ class TrainingPipeline:
         scaled_data, feature_cols = preprocessor.preprocess(df)
         X, y_open, y_close, y_high, y_low = preprocessor.create_sequences(scaled_data)
         if len(X) < 100:
-            print('❌ Insufficient sequences')
+            print('✗ Insufficient sequences')
             return False
         print(f'✓ {len(X)} sequences')
         
@@ -381,7 +388,7 @@ class TrainingPipeline:
                     if self.train_single_model(symbol, timeframe):
                         success_count += 1
                 except Exception as e:
-                    print(f'❌ Error: {str(e)[:80]}')
+                    print(f'✗ Error: {str(e)[:80]}')
         metadata_path = os.path.join(self.output_dir, 'metadata_v7.json')
         with open(metadata_path, 'w') as f:
             json.dump(self.models_metadata, f, indent=2)
