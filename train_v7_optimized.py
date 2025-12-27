@@ -1,3 +1,15 @@
+#!/usr/bin/env python3
+"""
+優化版本訓練腳本 - 修正 Binance US API 調用
+
+v7 優化版本：
+- 8000 根 K 棒（約8 個月數據）
+- 4 層 Bidirectional LSTM
+- Layer Normalization
+- 14 個技術指標
+- 優化的損失函數
+"""
+
 import os
 import json
 import numpy as np
@@ -61,53 +73,83 @@ class CryptoDataFetcher:
             except Exception as e:
                 print(f"Warning: Could not initialize Binance US client: {e}")
     
-    def fetch_from_binance_us(self, symbol, interval, limit=10000):
+    def fetch_from_binance_us(self, symbol, interval, limit=8000):
+        """修正的 Binance US API 調用方式"""
         if self.binance_us_client is None:
             return None
         try:
-            # Binance API 最多每次取 1000 根
             all_klines = []
             limit_per_request = 1000
-            requests_count = (limit + limit_per_request - 1) // limit_per_request
+            remaining = limit
             
-            for i in range(requests_count):
-                start_time = None
-                if all_klines:
-                    start_time = all_klines[-1][6] + 1  # use close_time + 1ms of last kline
-                
-                klines = self.binance_us_client.get_historical_klines(
-                    symbol, interval, limit=limit_per_request, startTime=start_time
-                )
-                if not klines:
-                    break
-                all_klines.extend(klines)
-                
-                if len(all_klines) >= limit:
-                    all_klines = all_klines[:limit]
+            # 計算需要的批次數
+            batches = (limit + limit_per_request - 1) // limit_per_request
+            
+            for batch_idx in range(batches):
+                try:
+                    if batch_idx == 0:
+                        # 第一批：直接取最新的數據
+                        klines = self.binance_us_client.get_historical_klines(
+                            symbol=symbol,
+                            interval=interval,
+                            limit=min(limit_per_request, remaining)
+                        )
+                    else:
+                        # 後續批次：使用最後一個 kline 的時間戳作為結束時間
+                        end_time = int(all_klines[0][0]) - 1  # 取第一個 kline 的時間戳減 1ms
+                        klines = self.binance_us_client.get_historical_klines(
+                            symbol=symbol,
+                            interval=interval,
+                            limit=min(limit_per_request, remaining),
+                            endTime=end_time
+                        )
+                    
+                    if not klines:
+                        break
+                    
+                    # 新數據插入到前面
+                    all_klines = klines + all_klines
+                    remaining -= len(klines)
+                    
+                    if remaining <= 0 or len(klines) < limit_per_request:
+                        break
+                    
+                except Exception as e:
+                    print(f"    Batch {batch_idx} error: {str(e)[:40]}")
+                    if batch_idx == 0:
+                        return None
                     break
             
             if not all_klines:
                 return None
             
-            df = pd.DataFrame(all_klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+            # 只取需要的數量
+            all_klines = all_klines[:limit]
+            
+            df = pd.DataFrame(all_klines, columns=[
+                'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                'close_time', 'quote_asset_volume', 'number_of_trades',
+                'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+            ])
+            
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
+            
             return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+        
         except Exception as e:
             print(f"  Binance error: {str(e)[:50]}")
             return None
     
-    def get_data(self, symbol, timeframe, limit=10000):
+    def get_data(self, symbol, timeframe, limit=8000):
         if self.binance_us_client:
-            binance_interval = {'15m': '15m', '1h': '1h'}
-            if timeframe in binance_interval:
-                try:
-                    df = self.fetch_from_binance_us(symbol, timeframe, limit)
-                    if df is not None and len(df) > 100:
-                        self.save_klines(symbol, timeframe, df, source='binance_us')
-                        return df
-                except:
-                    pass
+            try:
+                df = self.fetch_from_binance_us(symbol, timeframe, limit)
+                if df is not None and len(df) > 100:
+                    self.save_klines(symbol, timeframe, df, source='binance_us')
+                    return df
+            except:
+                pass
         return None
     
     def save_klines(self, symbol, timeframe, df, source='unknown'):
@@ -182,7 +224,7 @@ class TechnicalIndicators:
         df['volatility'] = TechnicalIndicators.calculate_volatility(close)
         df['roc'] = TechnicalIndicators.calculate_roc(close)
         
-        # 修復 bb_position
+        # 修複 bb_position
         bb_position = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-8)
         df['bb_position'] = bb_position.clip(0, 1).values
         
@@ -228,9 +270,9 @@ class CryptoV7OptimizedModel:
     改進：
     1. 更深的 Bidirectional LSTM 層數（4層）
     2. Layer Normalization 穩定訓練
-    3. 更澀的正則化
-    4. 更好的紁率配置
-    5. 優化的你好度函數
+    3. 更嚴格的正則化
+    4. 更好的優化器配置
+    5. 優化的損失函數
     """
     
     def __init__(self, sequence_length=120, features_dim=14):
@@ -272,7 +314,7 @@ class CryptoV7OptimizedModel:
         dropout6 = Dropout(0.1)(dense2)
         dense3 = Dense(32, activation='relu', kernel_regularizer=l1_l2(1e-5, 1e-5))(dropout6)
         
-        # 輸出層（三個絶對值輸出）
+        # 輸出層（四個絕對值輸出）
         open_output = Dense(1, name='open')(dense3)
         close_output = Dense(1, name='close')(dense3)
         high_output = Dense(1, name='high')(dense3)
