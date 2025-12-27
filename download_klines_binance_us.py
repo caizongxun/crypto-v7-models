@@ -19,7 +19,7 @@
 import os
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from typing import List, Dict, Optional
 
 import numpy as np
@@ -72,12 +72,9 @@ class BinanceUSKlinesDownloader:
         self.client: Optional[BinanceClient] = None
         if HAS_BINANCE:
             try:
-                # 使用 US 交易所
+                # 使用 US 交易所，不需要 API Key（公開 K 線資料）
                 self.client = BinanceClient(tld='us', requests_params={"timeout": BINANCE_REQUEST_TIMEOUT})
-                self._log("✓ Binance US client initialized")
-                # 測試連線
-                _ = self.client.get_account()
-                self._log("✓ Binance US connection verified")
+                self._log("✓ Binance US client initialized (public API, no auth needed)")
             except Exception as e:
                 self._log(f"✗ Failed to initialize Binance US client: {e}")
                 self.client = None
@@ -134,7 +131,6 @@ class BinanceUSKlinesDownloader:
                     )
                 else:
                     # 後續批次：往歷史回拉
-                    # startTime 是這批的最老 kline 的開始時間 - 1
                     self._log(f"    · Batch {batch_idx}: fetching from startTime={start_time}...")
                     batch = self.client.get_historical_klines(
                         symbol=symbol,
@@ -157,7 +153,6 @@ class BinanceUSKlinesDownloader:
                 )
 
                 # 設置下一批的 startTime（當前批最老 kline 的開始時間 - 1）
-                # batch[0] 是這一批最老的
                 if len(batch) > 0:
                     oldest_time = int(batch[0][0])
                     start_time = oldest_time - 1
@@ -259,7 +254,14 @@ def download_all_pairs_klines():
     # 寫 summary json
     summary_path = os.path.join(KLINES_ROOT, 'klines_summary_binance_us.json')
     with open(summary_path, 'w') as f:
-        json.dump({'generated_at': datetime.now(datetime.timezone.utc).isoformat(), 'summary': summary}, f, indent=2)
+        json.dump(
+            {
+                'generated_at': datetime.now(timezone.utc).isoformat(),
+                'summary': summary
+            },
+            f,
+            indent=2
+        )
 
     print("\n======================================================================")
     print("=                         Download Summary                           =")
@@ -276,7 +278,7 @@ def download_all_pairs_klines():
             )
     
     if total_configs == 0:
-        print("\n✗ No data downloaded. Check Binance connection or API key limits.")
+        print("\n✗ No data downloaded. Check Binance connection or network.")
     else:
         print(f"\n✓ All klines saved in: {KLINES_ROOT}/")
 
