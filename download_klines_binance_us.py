@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-下載並保存加密貨幣 K 線資料（Binance US）
+從 Binance US 下載加密貨幣 K 線資料
 
 用途：
 - 只負責抓資料，不做訓練
 - 每個幣種、每個時間框架各抓取 7000-10000 根 K 棒
 - 儲存到 repo 根目錄下的 klines/ 資料夾
-- 檔名格式： klines/{symbol}/{symbol}_{timeframe}_binance_us.csv
+- 檔名格式：klines/{symbol}/{symbol}_{timeframe}_binance_us.csv
 
 使用方式（Colab）：
 
-    !pip install python-binance
+    !pip install --upgrade python-binance
     !python download_klines_binance_us.py
 
 之後可再寫獨立腳本負責上傳到 HF datasets
@@ -18,7 +18,8 @@
 
 import os
 import json
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 
 import numpy as np
@@ -28,7 +29,7 @@ try:
     from binance.client import Client as BinanceClient
     HAS_BINANCE = True
 except Exception as e:
-    print("Warning: python-binance not installed. Install with: pip install python-binance")
+    print("Warning: python-binance not installed. Install with: pip install --upgrade python-binance")
     HAS_BINANCE = False
 
 # ---------------------------------------------------------------------------
@@ -53,9 +54,9 @@ MAX_KLINES = 10000
 # 儲存資料的根目錄（相對於 repo 根目錄）
 KLINES_ROOT = 'klines'
 
-# Binance US 連線設定
+# Binance 連線設定
 BINANCE_REQUEST_TIMEOUT = 30
-BINANCE_MAX_PER_REQUEST = 1000
+BINANCE_MAX_PER_REQUEST = 1000  # Binance API 限制
 
 
 # ---------------------------------------------------------------------------
@@ -71,8 +72,12 @@ class BinanceUSKlinesDownloader:
         self.client: Optional[BinanceClient] = None
         if HAS_BINANCE:
             try:
+                # 使用 US 交易所
                 self.client = BinanceClient(tld='us', requests_params={"timeout": BINANCE_REQUEST_TIMEOUT})
                 self._log("✓ Binance US client initialized")
+                # 測試連線
+                _ = self.client.get_account()
+                self._log("✓ Binance US connection verified")
             except Exception as e:
                 self._log(f"✗ Failed to initialize Binance US client: {e}")
                 self.client = None
@@ -89,7 +94,21 @@ class BinanceUSKlinesDownloader:
         return symbol_dir
 
     def download_klines(self, symbol: str, interval: str, target_count: int) -> Optional[pd.DataFrame]:
-        """從 Binance US 下載指定數量 K 線，從最新往回抓。"""
+        """
+        從 Binance US 下載指定數量 K 線。
+        
+        策略：
+        1. 第一批：抓最新的 N 根
+        2. 後續批次：用 startTime 往歷史回拉
+        
+        Args:
+            symbol: 交易對，如 'BTCUSDT'
+            interval: 時間框架，如 '15m', '1h'
+            target_count: 目標 K 線數量
+            
+        Returns:
+            DataFrame 或 None
+        """
         if self.client is None:
             self._log("✗ Binance US client not available")
             return None
@@ -97,6 +116,7 @@ class BinanceUSKlinesDownloader:
         remaining = target_count
         all_klines = []
         batch_idx = 0
+        start_time = None  # 用於往回抓的起始時間戳
 
         self._log(f"  ← Fetching {target_count} klines ({interval}) from Binance US...")
 
@@ -105,50 +125,66 @@ class BinanceUSKlinesDownloader:
 
             try:
                 if batch_idx == 0:
-                    # 第一批：直接取最新
+                    # 第一批：取最新的（不帶 startTime）
+                    self._log(f"    · Batch {batch_idx}: fetching latest {limit} klines...")
                     batch = self.client.get_historical_klines(
                         symbol=symbol,
                         interval=interval,
                         limit=limit,
                     )
                 else:
-                    # 後續批次：用前一輪最舊 kline 的開盤時間當 endTime 往前抓
-                    oldest_open_time = all_klines[0][0]  # 第一筆是目前最舊的
-                    end_time = int(oldest_open_time) - 1
+                    # 後續批次：往歷史回拉
+                    # startTime 是這批的最老 kline 的開始時間 - 1
+                    self._log(f"    · Batch {batch_idx}: fetching from startTime={start_time}...")
                     batch = self.client.get_historical_klines(
                         symbol=symbol,
                         interval=interval,
                         limit=limit,
-                        endTime=end_time,
+                        startTime=start_time,
                     )
 
                 if not batch:
                     self._log("    · No more data returned from Binance")
                     break
 
-                # 新批次插在前面，保持時間升序
+                # 新批次插入前面（保持時間升序）
                 all_klines = batch + all_klines
                 remaining -= len(batch)
-                batch_idx += 1
 
                 self._log(
                     f"    · Batch {batch_idx}: got {len(batch)} klines, "
                     f"total={len(all_klines)}, remaining={max(0, remaining)}"
                 )
 
+                # 設置下一批的 startTime（當前批最老 kline 的開始時間 - 1）
+                # batch[0] 是這一批最老的
+                if len(batch) > 0:
+                    oldest_time = int(batch[0][0])
+                    start_time = oldest_time - 1
+
+                batch_idx += 1
+
+                # 如果這批少於要求的數量，可能已經到了歷史邊界
                 if len(batch) < limit:
                     self._log("    · Binance returned less than requested, likely reached history boundary")
                     break
 
+                # 短暫延遲，避免被 rate limit
+                time.sleep(0.1)
+
             except Exception as e:
                 self._log(f"    · Batch {batch_idx} error: {str(e)[:80]}")
+                if batch_idx == 0:
+                    # 第一批就失敗，直接返回
+                    return None
+                # 後續批次失敗，用已有資料
                 break
 
         if not all_klines:
             self._log("  ✗ No klines downloaded")
             return None
 
-        # 截斷到需要的數量（最舊在前，最新在後）
+        # 截斷到需要的數量（最新在後面）
         if len(all_klines) > target_count:
             all_klines = all_klines[-target_count:]
 
@@ -165,7 +201,7 @@ class BinanceUSKlinesDownloader:
         df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
         df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
 
-        # 我們只保留必要欄位，其他在訓練前再重算
+        # 只保留必要欄位
         df = df[['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time']]
 
         self._log(f"  ✓ Downloaded {len(df)} klines for {symbol} {interval}")
@@ -175,7 +211,7 @@ class BinanceUSKlinesDownloader:
         symbol_dir = self._ensure_symbol_dir(symbol)
         filename = os.path.join(symbol_dir, f"{symbol}_{interval}_binance_us.csv")
         df.to_csv(filename, index=False)
-        self._log(f"  ✓ Saved to {filename}")
+        self._log(f"  → Saved to {filename}")
         return filename
 
 
@@ -223,23 +259,26 @@ def download_all_pairs_klines():
     # 寫 summary json
     summary_path = os.path.join(KLINES_ROOT, 'klines_summary_binance_us.json')
     with open(summary_path, 'w') as f:
-        json.dump({'generated_at': datetime.utcnow().isoformat() + 'Z', 'summary': summary}, f, indent=2)
+        json.dump({'generated_at': datetime.now(datetime.timezone.utc).isoformat(), 'summary': summary}, f, indent=2)
 
     print("\n======================================================================")
     print("=                         Download Summary                           =")
     print("======================================================================")
     print(f"Summary JSON: {summary_path}")
 
-    total_pairs = sum(1 for _ in summary.keys())
     total_configs = sum(len(v) for v in summary.values())
-    print(f"Downloaded klines for {total_configs} symbol/timeframe combinations")
-    print("Details:")
+    print(f"Successfully downloaded {total_configs} symbol/timeframe combinations:")
     for symbol, config in summary.items():
         for interval, meta in config.items():
             print(
-                f"  - {symbol} {interval}: {meta['rows']} rows "
+                f"  ✓ {symbol} {interval}: {meta['rows']} rows "
                 f"[{meta['start_time']} → {meta['end_time']}]"
             )
+    
+    if total_configs == 0:
+        print("\n✗ No data downloaded. Check Binance connection or API key limits.")
+    else:
+        print(f"\n✓ All klines saved in: {KLINES_ROOT}/")
 
 
 if __name__ == '__main__':
