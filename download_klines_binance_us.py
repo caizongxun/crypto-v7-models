@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
 從 Binance US 下載加密貨幣 K 線資料（純 REST API，無依賴庫）
+
+修正：使用 endTime 參數代替 startTime，避免重複數據
 """
 
 import os
@@ -39,10 +41,15 @@ class BinanceUSKlinesDownloader:
         print("✓ Binance US REST API downloader initialized (pure HTTP, no libraries)")
 
     def download_klines(self, symbol: str, interval: str, target_count: int) -> Optional[pd.DataFrame]:
+        """
+        策略：使用 endTime 參數往回拉
+        - Batch 0: 取最新的 N 根
+        - Batch 1+: 用 endTime 設置為前一批最早的時間 - 1，確保權數ہ改變
+        """
         remaining = target_count
         all_klines = []
         batch_idx = 0
-        start_time = None
+        end_time = None  # endTime 用於往後為策
 
         print(f"  ← Fetching {target_count} klines ({interval}) from Binance US REST API...")
 
@@ -56,11 +63,11 @@ class BinanceUSKlinesDownloader:
                     'limit': limit,
                 }
 
-                if batch_idx > 0 and start_time is not None:
-                    params['startTime'] = start_time
-                    print(f"    · Batch {batch_idx}: fetching from startTime={start_time}...")
-                else:
+                if batch_idx == 0:
                     print(f"    · Batch {batch_idx}: fetching latest {limit} klines...")
+                else:
+                    params['endTime'] = end_time
+                    print(f"    · Batch {batch_idx}: fetching from endTime={end_time}...")
 
                 resp = requests.get(
                     f"{self.base_url}/klines",
@@ -74,6 +81,11 @@ class BinanceUSKlinesDownloader:
                     print("    · No more data returned from Binance")
                     break
 
+                # 確保沒有重複：棧數第一根的時間應該比 end_time 更早
+                first_kline_time = int(batch[0][0])
+                if batch_idx > 0 and first_kline_time >= end_time:
+                    print(f"    · Warning: first kline time {first_kline_time} >= endTime {end_time}, possible duplicate!")
+
                 # 新批次插入前面（保持時間升序）
                 all_klines = batch + all_klines
                 remaining -= len(batch)
@@ -83,10 +95,10 @@ class BinanceUSKlinesDownloader:
                     f"total={len(all_klines)}, remaining={max(0, remaining)}"
                 )
 
-                # 設置下一批的 startTime
+                # 設置下一批的 endTime：當前批最削的時間 - 1
                 if len(batch) > 0:
                     oldest_time = int(batch[0][0])
-                    start_time = oldest_time - 1
+                    end_time = oldest_time - 1
 
                 batch_idx += 1
 
