@@ -186,21 +186,22 @@ class CoLabWorkflow:
         print()
         print(f"Starting training...\n")
 
-        # 執行訓練
-        train_script = f"""
-import sys
-sys.path.insert(0, '{self.repo_dir}')
-
-exec(open('{self.repo_dir}/train_v7_main.py').read())
-
-pipeline = TrainingPipeline(output_dir='{self.models_dir}', klines_dir='{self.klines_dir}')
-pipeline.train_all_models()
-"""
-
+        # 直接執行訓練腳本
         try:
-            exec(train_script)
-            print(f"\n✓ Training completed successfully!")
-            return True
+            # 新增 repo 路徑到 sys.path
+            sys.path.insert(0, self.repo_dir)
+            
+            # 直接執行訓練
+            cmd = f"cd {self.repo_dir} && python train_v7_main.py"
+            result = subprocess.run(cmd, shell=True, capture_output=False)
+            
+            if result.returncode == 0:
+                print(f"\n✓ Training completed successfully!")
+                return True
+            else:
+                print(f"\n✗ Training failed")
+                return False
+
         except Exception as e:
             print(f"\n✗ Training failed: {e}")
             import traceback
@@ -221,25 +222,27 @@ pipeline.train_all_models()
         print(f"  • Repository: {self.repo_dir}\n")
 
         print(f"Next steps:\n")
-        print(f"1. Visualize predictions:")
-        print(
-            f"   !python {self.repo_dir}/visualize_predictions.py --list-klines\n"
-        )
+        print(f"1. List available models and klines:")
+        print(f"   !ls {self.models_dir}/*.keras | head")
+        print(f"   !ls {self.klines_dir}/*.csv | head\n")
+        
+        print(f"2. Visualize predictions:")
+        print(f"   !python {self.repo_dir}/visualize_predictions.py --list-klines\n")
         print(f"   !python {self.repo_dir}/visualize_predictions.py \\")
         print(f"       --model_path {self.models_dir}/BTCUSDT_15m_v7.keras \\")
         print(f"       --symbol BTCUSDT_15m\n")
 
-        print(f"2. Upload models to Hugging Face:")
+        print(f"3. Upload models to Hugging Face:")
         print(f"   !python {self.repo_dir}/upload_models_template.py \\")
         print(f"       --models_dir {self.models_dir} \\")
         print(f"       --remote_folder models_v7\n")
 
-        print(f"3. Check metadata:")
+        print(f"4. Check metadata:")
         print(f"   import json")
         print(f"   with open('{self.models_dir}/metadata_v7.json') as f:")
         print(f"       metadata = json.load(f)")
         print(f"       for key, value in metadata.items():")
-        print(f"           print(f'{{key}}: {{value[\'val_mape\']:.2f}}%')\n")
+        print(f"           print(f'{{key}}: {{value[\"val_mape\"]:.2f}}%')\n")
 
     def run(self):
         """
