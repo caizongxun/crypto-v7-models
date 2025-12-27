@@ -186,21 +186,26 @@ class CoLabWorkflow:
         print()
         print(f"Starting training...\n")
 
-        # 直接執行訓練腳本
+        # 在同一進程中執行訓練
         try:
-            # 新增 repo 路徑到 sys.path
+            # 將 repo 加入 sys.path
             sys.path.insert(0, self.repo_dir)
             
-            # 直接執行訓練
-            cmd = f"cd {self.repo_dir} && python train_v7_main.py"
-            result = subprocess.run(cmd, shell=True, capture_output=False)
+            # 直接導入並執行
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("train_v7_main", f"{self.repo_dir}/train_v7_main.py")
+            train_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(train_module)
             
-            if result.returncode == 0:
-                print(f"\n✓ Training completed successfully!")
-                return True
-            else:
-                print(f"\n✗ Training failed")
-                return False
+            # 執行訓練
+            pipeline = train_module.TrainingPipeline(
+                output_dir=self.models_dir, 
+                klines_dir=self.klines_dir
+            )
+            pipeline.train_all_models()
+            
+            print(f"\n✓ Training completed successfully!")
+            return True
 
         except Exception as e:
             print(f"\n✗ Training failed: {e}")
