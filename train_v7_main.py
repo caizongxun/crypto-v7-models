@@ -289,14 +289,7 @@ class CryptoV7Model:
             self.model.save(filepath)
 
 class TrainingPipeline:
-    # 修改：只訓練 5 個幣種
-    CRYPTO_PAIRS = {
-        'BTC': 'BTCUSDT',
-        'ETH': 'ETHUSDT',
-        'BNB': 'BNBUSDT',
-        'XRP': 'XRPUSDT',
-        'ADA': 'ADAUSDT'
-    }
+    CRYPTO_PAIRS = {'BTC': 'BTCUSDT', 'ETH': 'ETHUSDT', 'BNB': 'BNBUSDT', 'XRP': 'XRPUSDT', 'ADA': 'ADAUSDT', 'DOGE': 'DOGEUSDT', 'SOL': 'SOLUSDT', 'LINK': 'LINKUSDT', 'MATIC': 'MATICUSDT', 'AVAX': 'AVAXUSDT', 'UNI': 'UNIUSDT', 'LTC': 'LTCUSDT', 'BCH': 'BCHUSDT', 'ETC': 'ETCUSDT', 'XLM': 'XLMUSDT', 'VET': 'VETUSDT', 'FIL': 'FILUSDT', 'THETA': 'THETAUSDT', 'NEAR': 'NEARUSDT', 'APE': 'APEUSDT'}
     TIMEFRAMES = ['15m', '1h']
     
     def __init__(self, output_dir='/content/all_models', klines_dir='/content/klines_data'):
