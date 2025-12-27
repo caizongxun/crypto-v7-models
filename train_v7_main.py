@@ -50,8 +50,10 @@ print('TensorFlow version:', tf.__version__)
 print('GPU Available:', tf.config.list_physical_devices('GPU'))
 
 class CryptoDataFetcher:
-    def __init__(self):
+    def __init__(self, data_dir='/content/klines_data'):
         self.binance_us_client = None
+        self.data_dir = data_dir
+        os.makedirs(data_dir, exist_ok=True)
         if HAS_BINANCE:
             try:
                 self.binance_us_client = BinanceClient(tld='us', requests_params={"timeout": 10})
@@ -94,6 +96,7 @@ class CryptoDataFetcher:
                 try:
                     df = self.fetch_from_binance_us(symbol, timeframe, limit)
                     if df is not None and len(df) > 100:
+                        self.save_klines(symbol, timeframe, df, source='binance')
                         return df
                 except:
                     pass
@@ -107,8 +110,15 @@ class CryptoDataFetcher:
                 df = self.fetch_from_yfinance(yf_symbol, yf_interval[timeframe], '180d')
             if df is not None and len(df) > limit:
                 df = df.iloc[-limit:].reset_index(drop=True)
+            if df is not None:
+                self.save_klines(symbol, timeframe, df, source='yfinance')
             return df
         return None
+    
+    def save_klines(self, symbol, timeframe, df, source='unknown'):
+        filename = os.path.join(self.data_dir, f'{symbol}_{timeframe}_{source}.csv')
+        df.to_csv(filename, index=False)
+        print(f'  → Saved {len(df)} klines to {filename}')
 
 class TechnicalIndicators:
     @staticmethod
@@ -282,29 +292,40 @@ class TrainingPipeline:
     CRYPTO_PAIRS = {'BTC': 'BTCUSDT', 'ETH': 'ETHUSDT', 'BNB': 'BNBUSDT', 'XRP': 'XRPUSDT', 'ADA': 'ADAUSDT', 'DOGE': 'DOGEUSDT', 'SOL': 'SOLUSDT', 'LINK': 'LINKUSDT', 'MATIC': 'MATICUSDT', 'AVAX': 'AVAXUSDT', 'UNI': 'UNIUSDT', 'LTC': 'LTCUSDT', 'BCH': 'BCHUSDT', 'ETC': 'ETCUSDT', 'XLM': 'XLMUSDT', 'VET': 'VETUSDT', 'FIL': 'FILUSDT', 'THETA': 'THETAUSDT', 'NEAR': 'NEARUSDT', 'APE': 'APEUSDT'}
     TIMEFRAMES = ['15m', '1h']
     
-    def __init__(self, output_dir='/content/all_models'):
+    def __init__(self, output_dir='/content/all_models', klines_dir='/content/klines_data'):
         self.output_dir = output_dir
-        self.fetcher = CryptoDataFetcher()
+        self.klines_dir = klines_dir
+        self.fetcher = CryptoDataFetcher(data_dir=klines_dir)
         self.models_metadata = {}
         os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(klines_dir, exist_ok=True)
     
     def train_single_model(self, symbol, timeframe, limit=10000):
-        print(f'Training {symbol} {timeframe}...', end=' ', flush=True)
+        print(f'\nTraining {symbol} {timeframe}...')
+        print(f'  ← Fetching klines...', end=' ', flush=True)
         df = self.fetcher.get_data(symbol, timeframe, limit)
         if df is None or len(df) < 100:
-            print('No data')
+            print('❌ No data')
             return False
+        print(f'✓ Got {len(df)} klines')
+        
+        print(f'  ← Adding indicators...', end=' ', flush=True)
         df = TechnicalIndicators.add_all_indicators(df)
         df = df.dropna()
         if len(df) < 100:
-            print('Insufficient data')
+            print('❌ Insufficient data')
             return False
+        print(f'✓ {len(df)} rows after cleanup')
+        
+        print(f'  ← Building sequences...', end=' ', flush=True)
         preprocessor = DataPreprocessor(sequence_length=60)
         scaled_data, feature_cols = preprocessor.preprocess(df)
         X, y_open, y_close, y_high, y_low = preprocessor.create_sequences(scaled_data)
         if len(X) < 100:
-            print('Insufficient sequences')
+            print('❌ Insufficient sequences')
             return False
+        print(f'✓ {len(X)} sequences')
+        
         split_idx = int(len(X) * 0.8)
         X_train, X_val = X[:split_idx], X[split_idx:]
         y_open_train, y_open_val = y_open[:split_idx], y_open[split_idx:]
@@ -312,6 +333,7 @@ class TrainingPipeline:
         y_high_train, y_high_val = y_high[:split_idx], y_high[split_idx:]
         y_low_train, y_low_val = y_low[:split_idx], y_low[split_idx:]
         
+        print(f'  ← Training model...', end=' ', flush=True)
         model = CryptoV7Model(sequence_length=60, features_dim=len(feature_cols))
         model.build_model()
         history = model.train(
@@ -319,15 +341,20 @@ class TrainingPipeline:
             X_val, y_open_val, y_close_val, y_high_val, y_low_val,
             epochs=100, batch_size=32
         )
+        print('✓ Training complete')
         
+        print(f'  ← Saving model...', end=' ', flush=True)
         model_path = os.path.join(self.output_dir, f'{symbol}_{timeframe}_v7.keras')
         model.save(model_path)
+        print(f'✓ Saved to {model_path}')
         
+        print(f'  ← Evaluating...', end=' ', flush=True)
         y_pred = model.predict(X_val)
         y_val = np.column_stack([y_open_val, y_close_val, y_high_val, y_low_val])
         mse = mean_squared_error(y_val, y_pred)
         mae = mean_absolute_error(y_val, y_pred)
         mape = mean_absolute_percentage_error(y_val, y_pred)
+        print(f'✓ MAPE: {mape:.2f}%')
         
         metadata = {
             'symbol': symbol,
@@ -343,7 +370,6 @@ class TrainingPipeline:
             'timestamp': datetime.now().isoformat()
         }
         self.models_metadata[f'{symbol}_{timeframe}'] = metadata
-        print(f'MAPE: {mape:.2f}%')
         return True
     
     def train_all_models(self):
@@ -355,13 +381,15 @@ class TrainingPipeline:
                     if self.train_single_model(symbol, timeframe):
                         success_count += 1
                 except Exception as e:
-                    print(f'Error: {str(e)[:80]}')
+                    print(f'❌ Error: {str(e)[:80]}')
         metadata_path = os.path.join(self.output_dir, 'metadata_v7.json')
         with open(metadata_path, 'w') as f:
             json.dump(self.models_metadata, f, indent=2)
-        print(f'\nTraining completed: {success_count}/{total_count} models')
+        print(f'\n\n✓ Training completed: {success_count}/{total_count} models')
+        print(f'✓ Klines saved in: {self.klines_dir}')
+        print(f'✓ Models saved in: {self.output_dir}')
         return self.models_metadata
 
 if __name__ == '__main__':
-    pipeline = TrainingPipeline(output_dir='/content/all_models')
+    pipeline = TrainingPipeline(output_dir='/content/all_models', klines_dir='/content/klines_data')
     pipeline.train_all_models()
