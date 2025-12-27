@@ -19,7 +19,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, mean_absolu
 import yfinance as yf
 
 try:
-    from binance.client import Client
+    from binance.client import Client as BinanceClient
     HAS_BINANCE = True
 except:
     HAS_BINANCE = False
@@ -38,22 +38,28 @@ class CryptoDataFetcher:
     """Fetch cryptocurrency data from multiple sources"""
     
     def __init__(self):
-        self.binance_client = None
+        self.binance_us_client = None
         if HAS_BINANCE:
             try:
-                self.binance_client = Client()
-            except:
-                pass
+                self.binance_us_client = BinanceClient(
+                    tld='us',
+                    requests_params={"timeout": 10}
+                )
+            except Exception as e:
+                print(f'Binance US client failed: {str(e)[:50]}')
     
-    def fetch_from_binance(self, symbol, interval, limit=10000):
+    def fetch_from_binance_us(self, symbol, interval, limit=1000):
         """Fetch from Binance US"""
-        if not HAS_BINANCE or self.binance_client is None:
+        if self.binance_us_client is None:
             return None
         
         try:
-            klines = self.binance_client.get_historical_klines(
+            klines = self.binance_us_client.get_historical_klines(
                 symbol, interval, limit=min(limit, 1000)
             )
+            
+            if not klines:
+                return None
             
             df = pd.DataFrame(klines, columns=[
                 'timestamp', 'open', 'high', 'low', 'close', 'volume',
@@ -99,12 +105,12 @@ class CryptoDataFetcher:
     
     def get_data(self, symbol, timeframe, limit=10000):
         """Unified interface to fetch data"""
-        if HAS_BINANCE and self.binance_client:
+        if self.binance_us_client:
             binance_interval = {'15m': '15m', '1h': '1h'}
-            if timeframe in binance_interval and 'USDT' in symbol:
+            if timeframe in binance_interval:
                 try:
-                    df = self.fetch_from_binance(symbol, timeframe, limit)
-                    if df is not None and len(df) > 0:
+                    df = self.fetch_from_binance_us(symbol, timeframe, limit)
+                    if df is not None and len(df) > 100:
                         return df
                 except:
                     pass
@@ -167,7 +173,7 @@ class TechnicalIndicators:
         std = pd.Series(close).rolling(window=period).std().values
         upper = sma + (num_std * std)
         lower = sma - (num_std * std)
-        bandwidth = (upper - lower) / sma
+        bandwidth = (upper - lower) / (sma + 1e-8)
         
         return upper, sma, lower, bandwidth
     
@@ -412,14 +418,14 @@ class TrainingPipeline:
         
         df = self.fetcher.get_data(symbol, timeframe, limit)
         if df is None or len(df) < 100:
-            print('Insufficient data')
+            print('No data')
             return False
         
         df = TechnicalIndicators.add_all_indicators(df)
         df = df.dropna()
         
         if len(df) < 100:
-            print('Insufficient data after indicators')
+            print('Insufficient data')
             return False
         
         preprocessor = DataPreprocessor(sequence_length=60)
