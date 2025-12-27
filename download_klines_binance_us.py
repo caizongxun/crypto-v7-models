@@ -10,7 +10,6 @@
 
 使用方式（Colab）：
 
-    !pip install --upgrade python-binance
     !python download_klines_binance_us.py
 
 之後可再寫獨立腳本負責上傳到 HF datasets
@@ -24,13 +23,7 @@ from typing import List, Dict, Optional
 
 import numpy as np
 import pandas as pd
-
-try:
-    from binance.client import Client as BinanceClient
-    HAS_BINANCE = True
-except Exception as e:
-    print("Warning: python-binance not installed. Install with: pip install --upgrade python-binance")
-    HAS_BINANCE = False
+import requests
 
 # ---------------------------------------------------------------------------
 # 設定
@@ -51,33 +44,26 @@ TIMEFRAMES: List[str] = ['15m', '1h']
 MIN_KLINES = 7000
 MAX_KLINES = 10000
 
-# 儲存資料的根目錄（相對於 repo 根目錄）
-KLINES_ROOT = 'klines'
+# 儲存資料的根目錄
+ KLINES_ROOT = 'klines'
 
-# Binance 連線設定
-BINANCE_REQUEST_TIMEOUT = 30
-BINANCE_MAX_PER_REQUEST = 1000  # Binance API 限制
+# Binance US REST API 端點
+BINANCE_US_BASE_URL = 'https://api.binance.us/api/v3'
+BINANCE_MAX_PER_REQUEST = 1000
+REQUEST_TIMEOUT = 10
 
 
 # ---------------------------------------------------------------------------
-# 工具函數：Binance US K 線下載
+# 工具函數
 # ---------------------------------------------------------------------------
 
 class BinanceUSKlinesDownloader:
     def __init__(self, klines_root: str = KLINES_ROOT, print_prefix: str = ""):
         self.klines_root = klines_root
         self.print_prefix = print_prefix
+        self.base_url = BINANCE_US_BASE_URL
         os.makedirs(self.klines_root, exist_ok=True)
-
-        self.client: Optional[BinanceClient] = None
-        if HAS_BINANCE:
-            try:
-                # 使用 US 交易所，不需要 API Key（公開 K 線資料）
-                self.client = BinanceClient(tld='us', requests_params={"timeout": BINANCE_REQUEST_TIMEOUT})
-                self._log("✓ Binance US client initialized (public API, no auth needed)")
-            except Exception as e:
-                self._log(f"✗ Failed to initialize Binance US client: {e}")
-                self.client = None
+        self._log("✓ Binance US REST API downloader initialized")
 
     def _log(self, msg: str) -> None:
         if self.print_prefix:
@@ -92,52 +78,43 @@ class BinanceUSKlinesDownloader:
 
     def download_klines(self, symbol: str, interval: str, target_count: int) -> Optional[pd.DataFrame]:
         """
-        從 Binance US 下載指定數量 K 線。
+        從 Binance US REST API 下載 K 線。
         
         策略：
         1. 第一批：抓最新的 N 根
-        2. 後續批次：用 startTime 往歷史回拉
-        
-        Args:
-            symbol: 交易對，如 'BTCUSDT'
-            interval: 時間框架，如 '15m', '1h'
-            target_count: 目標 K 線數量
-            
-        Returns:
-            DataFrame 或 None
+        2. 後續批次：用 startTime 參數往歷史回拉
         """
-        if self.client is None:
-            self._log("✗ Binance US client not available")
-            return None
-
         remaining = target_count
         all_klines = []
         batch_idx = 0
-        start_time = None  # 用於往回抓的起始時間戳
+        start_time = None
 
-        self._log(f"  ← Fetching {target_count} klines ({interval}) from Binance US...")
+        self._log(f"  ← Fetching {target_count} klines ({interval}) from Binance US REST API...")
 
         while remaining > 0:
             limit = min(BINANCE_MAX_PER_REQUEST, remaining)
 
             try:
-                if batch_idx == 0:
-                    # 第一批：取最新的（不帶 startTime）
-                    self._log(f"    · Batch {batch_idx}: fetching latest {limit} klines...")
-                    batch = self.client.get_historical_klines(
-                        symbol=symbol,
-                        interval=interval,
-                        limit=limit,
-                    )
-                else:
-                    # 後續批次：往歷史回拉
+                params = {
+                    'symbol': symbol,
+                    'interval': interval,
+                    'limit': limit,
+                }
+
+                if batch_idx > 0 and start_time is not None:
+                    params['startTime'] = start_time
                     self._log(f"    · Batch {batch_idx}: fetching from startTime={start_time}...")
-                    batch = self.client.get_historical_klines(
-                        symbol=symbol,
-                        interval=interval,
-                        limit=limit,
-                        startTime=start_time,
-                    )
+                else:
+                    self._log(f"    · Batch {batch_idx}: fetching latest {limit} klines...")
+
+                # 直接 GET 請求
+                resp = requests.get(
+                    f"{self.base_url}/klines",
+                    params=params,
+                    timeout=REQUEST_TIMEOUT
+                )
+                resp.raise_for_status()
+                batch = resp.json()
 
                 if not batch:
                     self._log("    · No more data returned from Binance")
@@ -152,37 +129,40 @@ class BinanceUSKlinesDownloader:
                     f"total={len(all_klines)}, remaining={max(0, remaining)}"
                 )
 
-                # 設置下一批的 startTime（當前批最老 kline 的開始時間 - 1）
+                # 設置下一批的 startTime
                 if len(batch) > 0:
                     oldest_time = int(batch[0][0])
                     start_time = oldest_time - 1
 
                 batch_idx += 1
 
-                # 如果這批少於要求的數量，可能已經到了歷史邊界
                 if len(batch) < limit:
                     self._log("    · Binance returned less than requested, likely reached history boundary")
                     break
 
-                # 短暫延遲，避免被 rate limit
-                time.sleep(0.1)
+                # 短暫延遲
+                time.sleep(0.2)
 
+            except requests.exceptions.RequestException as e:
+                self._log(f"    · Batch {batch_idx} request error: {str(e)[:80]}")
+                if batch_idx == 0:
+                    return None
+                break
             except Exception as e:
                 self._log(f"    · Batch {batch_idx} error: {str(e)[:80]}")
                 if batch_idx == 0:
-                    # 第一批就失敗，直接返回
                     return None
-                # 後續批次失敗，用已有資料
                 break
 
         if not all_klines:
             self._log("  ✗ No klines downloaded")
             return None
 
-        # 截斷到需要的數量（最新在後面）
+        # 截斷到需要的數量
         if len(all_klines) > target_count:
             all_klines = all_klines[-target_count:]
 
+        # 轉換 DataFrame
         df = pd.DataFrame(
             all_klines,
             columns=[
@@ -192,6 +172,7 @@ class BinanceUSKlinesDownloader:
             ],
         )
 
+        # 數據類型中轉換
         df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
         df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
         df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
@@ -211,7 +192,7 @@ class BinanceUSKlinesDownloader:
 
 
 # ---------------------------------------------------------------------------
-# 主流程：下載所有幣種 + 時間框架
+# 主流程
 # ---------------------------------------------------------------------------
 
 def download_all_pairs_klines():
@@ -220,11 +201,6 @@ def download_all_pairs_klines():
     print("======================================================================\n")
 
     downloader = BinanceUSKlinesDownloader(klines_root=KLINES_ROOT)
-
-    if downloader.client is None:
-        print("✗ Binance US client is not available. Abort.")
-        return
-
     summary = {}
 
     for base, symbol in CRYPTO_PAIRS.items():
@@ -278,7 +254,7 @@ def download_all_pairs_klines():
             )
     
     if total_configs == 0:
-        print("\n✗ No data downloaded. Check Binance connection or network.")
+        print("\n✗ No data downloaded. Check network connection.")
     else:
         print(f"\n✓ All klines saved in: {KLINES_ROOT}/")
 
