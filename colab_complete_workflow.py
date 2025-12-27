@@ -186,26 +186,18 @@ class CoLabWorkflow:
         print()
         print(f"Starting training...\n")
 
-        # 在同一進程中執行訓練
+        # 直接執行訓練腳本
         try:
-            # 將 repo 加入 sys.path
-            sys.path.insert(0, self.repo_dir)
+            # 使用 -c 參數直接執行 Python 代碼
+            cmd = f"cd {self.repo_dir} && python train_v7_main.py"
+            result = subprocess.run(cmd, shell=True)
             
-            # 直接導入並執行
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("train_v7_main", f"{self.repo_dir}/train_v7_main.py")
-            train_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(train_module)
-            
-            # 執行訓練
-            pipeline = train_module.TrainingPipeline(
-                output_dir=self.models_dir, 
-                klines_dir=self.klines_dir
-            )
-            pipeline.train_all_models()
-            
-            print(f"\n✓ Training completed successfully!")
-            return True
+            if result.returncode == 0:
+                print(f"\n✓ Training completed successfully!")
+                return True
+            else:
+                print(f"\n✗ Training failed with return code {result.returncode}")
+                return False
 
         except Exception as e:
             print(f"\n✗ Training failed: {e}")
@@ -221,9 +213,13 @@ class CoLabWorkflow:
 
         print(f"✓ Workflow completed!\n")
 
+        # 檢查生成的檔案
+        models_count = len(list(Path(self.models_dir).glob("*.keras"))) if Path(self.models_dir).exists() else 0
+        klines_count = len(list(Path(self.klines_dir).glob("*.csv"))) if Path(self.klines_dir).exists() else 0
+
         print(f"Generated files:")
-        print(f"  • Models: {self.models_dir}")
-        print(f"  • Klines: {self.klines_dir}")
+        print(f"  • Models: {self.models_dir} ({models_count} .keras files)")
+        print(f"  • Klines: {self.klines_dir} ({klines_count} .csv files)")
         print(f"  • Repository: {self.repo_dir}\n")
 
         print(f"Next steps:\n")
