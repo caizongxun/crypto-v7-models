@@ -301,7 +301,7 @@ class TrainingPipeline:
         model.build_model()
         history = model.train(
             X_train, y_open_train, y_close_train, y_high_train, y_low_train,
-            X_val, y_open_val, y_close_val, y_val_high, y_val_low,
+            X_val, y_open_val, y_close_val, y_high_val, y_low_val,
             epochs=100, batch_size=32
         )
         
