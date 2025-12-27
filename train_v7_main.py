@@ -317,18 +317,8 @@ class CryptoV7Model:
         
         self.model.compile(
             optimizer=Adam(learning_rate=0.001),
-            loss={
-                'open': 'mse',
-                'close': 'mse',
-                'high': 'mse',
-                'low': 'mse'
-            },
-            loss_weights={
-                'open': 1.0,
-                'close': 1.0,
-                'high': 0.8,
-                'low': 0.8
-            },
+            loss=['mse', 'mse', 'mse', 'mse'],
+            loss_weights=[1.0, 1.0, 0.8, 0.8],
             metrics=['mae']
         )
         
@@ -341,27 +331,16 @@ class CryptoV7Model:
             ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
         ]
         
-        y_train_split = {
-            'open': y_train[:, 0],
-            'close': y_train[:, 1],
-            'high': y_train[:, 2],
-            'low': y_train[:, 3]
-        }
-        
-        y_val_split = {
-            'open': y_val[:, 0],
-            'close': y_val[:, 1],
-            'high': y_val[:, 2],
-            'low': y_val[:, 3]
-        }
+        y_train_list = [y_train[:, 0], y_train[:, 1], y_train[:, 2], y_train[:, 3]]
+        y_val_list = [y_val[:, 0], y_val[:, 1], y_val[:, 2], y_val[:, 3]]
         
         history = self.model.fit(
-            X_train, y_train_split,
-            validation_data=(X_val, y_val_split),
+            X_train, y_train_list,
+            validation_data=(X_val, y_val_list),
             epochs=epochs,
             batch_size=batch_size,
             callbacks=callbacks,
-            verbose=1
+            verbose=0
         )
         
         return history
@@ -376,7 +355,6 @@ class CryptoV7Model:
         """Save model"""
         if self.model:
             self.model.save(filepath)
-            print(f'Model saved to {filepath}')
 
 class TrainingPipeline:
     """Complete training pipeline for all cryptocurrencies"""
@@ -414,7 +392,7 @@ class TrainingPipeline:
     
     def train_single_model(self, symbol, timeframe, limit=10000):
         """Train model for single cryptocurrency and timeframe"""
-        print(f'Training {symbol} {timeframe}...', end=' ')
+        print(f'Training {symbol} {timeframe}...', end=' ', flush=True)
         
         df = self.fetcher.get_data(symbol, timeframe, limit)
         if df is None or len(df) < 100:
