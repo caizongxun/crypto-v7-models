@@ -57,13 +57,14 @@ class HuggingFaceUploader:
         keras_models = list(models_path.glob('*.keras'))
         print(f"\nFound {len(keras_models)} .keras models:")
         for model in sorted(keras_models):
-            print(f"  - {model.name}")
+            file_size = model.stat().st_size / (1024**2)  # 轉換為 MB
+            print(f"  - {model.name} ({file_size:.2f} MB)")
         
         return sorted(keras_models)
     
-    def upload_models(self, remote_folder="models_v7"):
+    def upload_folder(self, remote_folder="models_v7"):
         """
-        上傳所有 .keras 模型到 Hugging Face 的指定資料夾
+        一次性上傳整個 all_models 資料夾到 Hugging Face
         
         Args:
             remote_folder: Hugging Face repo 中的遠端資料夾名稱 (default: models_v7)
@@ -84,64 +85,48 @@ class HuggingFaceUploader:
             print("\n✗ No .keras models found to upload")
             return False
         
-        # 上傳每個模型
-        successful_uploads = 0
-        failed_uploads = []
+        # 計算總大小
+        total_size = sum(model.stat().st_size for model in keras_models)
+        total_size_mb = total_size / (1024**2)
+        print(f"\nTotal size to upload: {total_size_mb:.2f} MB")
         
-        print(f"\nUploading {len(keras_models)} models...\n")
+        # 上傳整個資料夾
+        print(f"\nUploading {len(keras_models)} models as a folder...\n")
         
-        for idx, model_path in enumerate(keras_models, 1):
-            model_name = model_path.name
-            remote_path = f"{remote_folder}/{model_name}"
+        try:
+            print("Uploading...", end=' ', flush=True)
             
-            try:
-                print(f"[{idx}/{len(keras_models)}] Uploading {model_name}...", end=' ', flush=True)
-                
-                self.api.upload_file(
-                    path_or_fileobj=str(model_path),
-                    path_in_repo=remote_path,
-                    repo_id=self.repo_id,
-                    repo_type="model"
-                )
-                
-                print(f"✓")
-                successful_uploads += 1
-                
-            except Exception as e:
-                print(f"✗ Error: {str(e)[:60]}")
-                failed_uploads.append((model_name, str(e)))
-        
-        # 上傳 metadata 檔案（如果存在）
-        metadata_path = Path(self.models_dir) / 'metadata_v7.json'
-        if metadata_path.exists():
-            try:
-                print(f"\nUploading metadata_v7.json...", end=' ', flush=True)
-                self.api.upload_file(
-                    path_or_fileobj=str(metadata_path),
-                    path_in_repo=f"{remote_folder}/metadata_v7.json",
-                    repo_id=self.repo_id,
-                    repo_type="model"
-                )
-                print(f"✓")
-            except Exception as e:
-                print(f"✗ Error: {str(e)[:60]}")
+            self.api.upload_folder(
+                folder_path=self.models_dir,
+                repo_id=self.repo_id,
+                repo_type="model",
+                path_in_repo=remote_folder,
+                ignore_patterns=["*.py", "*.md", "*.txt"]  # 只上傳 .keras 檔案
+            )
+            
+            print(f"✓")
+            successful = True
+            
+        except Exception as e:
+            print(f"✗ Error: {str(e)}")
+            successful = False
         
         # 輸出上傳結果總結
         print(f"\n{'='*70}")
         print(f"Upload Summary")
         print(f"{'='*70}")
-        print(f"✓ Successfully uploaded: {successful_uploads}/{len(keras_models)} models")
         
-        if failed_uploads:
-            print(f"\n✗ Failed uploads ({len(failed_uploads)}):")
-            for model_name, error in failed_uploads:
-                print(f"  - {model_name}: {error[:50]}...")
+        if successful:
+            print(f"✓ Successfully uploaded {len(keras_models)} models")
+            print(f"✓ Total size: {total_size_mb:.2f} MB")
+            print(f"\n✓ All models available at:")
+            print(f"  https://huggingface.co/{self.repo_id}/tree/main/{remote_folder}")
+        else:
+            print(f"✗ Upload failed")
         
-        print(f"\n✓ All models available at:")
-        print(f"  https://huggingface.co/{self.repo_id}/tree/main/{remote_folder}")
         print(f"{'='*70}\n")
         
-        return successful_uploads > 0
+        return successful
 
 if __name__ == '__main__':
     import sys
@@ -160,7 +145,7 @@ if __name__ == '__main__':
             models_dir=models_dir
         )
         
-        success = uploader.upload_models(remote_folder=remote_folder)
+        success = uploader.upload_folder(remote_folder=remote_folder)
         
         if success:
             print("\n✓ Upload process completed successfully!")
