@@ -33,6 +33,19 @@ try:
 except ImportError:
     HAS_TALIB = False
 
+# GPU 優化設置
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        logical_gpus = tf.config.list_logical_devices('GPU')
+        print(f'GPU Setup: {len(gpus)} Physical GPU(s), {len(logical_gpus)} Logical GPU(s)')
+    except RuntimeError as e:
+        print(e)
+else:
+    print('No GPU found. Using CPU.')
+
 print('TensorFlow version:', tf.__version__)
 print('GPU Available:', tf.config.list_physical_devices('GPU'))
 
