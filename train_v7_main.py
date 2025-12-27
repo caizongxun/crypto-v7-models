@@ -4,8 +4,10 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 import warnings
+import logging
 import traceback
 warnings.filterwarnings('ignore')
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
 
 import tensorflow as tf
 from tensorflow import keras
@@ -305,7 +307,7 @@ class TrainingPipeline:
             epochs=100, batch_size=32
         )
         
-        model_path = os.path.join(self.output_dir, f'{symbol}_{timeframe}_v7.h5')
+        model_path = os.path.join(self.output_dir, f'{symbol}_{timeframe}_v7.keras')
         model.save(model_path)
         
         y_pred = model.predict(X_val)
