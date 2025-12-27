@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 import warnings
+import traceback
 warnings.filterwarnings('ignore')
 
 import tensorflow as tf
@@ -34,8 +35,6 @@ print('TensorFlow version:', tf.__version__)
 print('GPU Available:', tf.config.list_physical_devices('GPU'))
 
 class CryptoDataFetcher:
-    """Fetch cryptocurrency data from multiple sources"""
-    
     def __init__(self):
         self.binance_us_client = None
         if HAS_BINANCE:
@@ -230,6 +229,12 @@ class CryptoV7Model:
             ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
         ]
         
+        print(f'DEBUG - X_train shape: {X_train.shape}')
+        print(f'DEBUG - y_train_open shape: {y_train_open.shape}')
+        print(f'DEBUG - y_train_close shape: {y_train_close.shape}')
+        print(f'DEBUG - y_train_high shape: {y_train_high.shape}')
+        print(f'DEBUG - y_train_low shape: {y_train_low.shape}')
+        
         y_train_dict = {
             'open': y_train_open,
             'close': y_train_close,
@@ -243,6 +248,9 @@ class CryptoV7Model:
             'high': y_val_high,
             'low': y_val_low
         }
+        
+        print(f'DEBUG - y_train_dict keys: {y_train_dict.keys()}')
+        print(f'DEBUG - y_train_dict[open] shape: {y_train_dict["open"].shape}')
         
         history = self.model.fit(
             X_train, y_train_dict,
@@ -265,7 +273,7 @@ class CryptoV7Model:
             self.model.save(filepath)
 
 class TrainingPipeline:
-    CRYPTO_PAIRS = {'BTC': 'BTCUSDT', 'ETH': 'ETHUSDT', 'BNB': 'BNBUSDT', 'XRP': 'XRPUSDT', 'ADA': 'ADAUSDT', 'DOGE': 'DOGEUSDT', 'SOL': 'SOLUSDT', 'LINK': 'LINKUSDT', 'MATIC': 'MATICUSDT', 'AVAX': 'AVAXUSDT', 'UNI': 'UNIUSDT', 'LTC': 'LTCUSDT', 'BCH': 'BCHUSDT', 'ETC': 'ETCUSDT', 'XLM': 'XLMUSDT', 'VET': 'VETUSDT', 'FIL': 'FILUSDT', 'THETA': 'THETAUSDT', 'NEAR': 'NEARUSDT', 'APE': 'APEUSDT'}
+    CRYPTO_PAIRS = {'BTC': 'BTCUSDT', 'ETH': 'ETHUSDT'}
     TIMEFRAMES = ['15m', '1h']
     
     def __init__(self, output_dir='/content/all_models'):
@@ -301,8 +309,8 @@ class TrainingPipeline:
         model = CryptoV7Model(sequence_length=60, features_dim=len(feature_cols))
         model.build_model()
         history = model.train(
-            X_train, y_open_train, y_close_train, y_high_train, y_low_train,
-            X_val, y_open_val, y_close_val, y_high_val, y_low_val,
+            X_train, y_open_train, y_close_train, y_train_high, y_train_low,
+            X_val, y_open_val, y_close_val, y_val_high, y_val_low,
             epochs=100, batch_size=32
         )
         
@@ -341,7 +349,8 @@ class TrainingPipeline:
                     if self.train_single_model(symbol, timeframe):
                         success_count += 1
                 except Exception as e:
-                    print(f'Error: {str(e)[:50]}')
+                    print(f'Error: {str(e)}')
+                    traceback.print_exc()
         metadata_path = os.path.join(self.output_dir, 'metadata_v7.json')
         with open(metadata_path, 'w') as f:
             json.dump(self.models_metadata, f, indent=2)
