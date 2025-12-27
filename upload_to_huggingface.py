@@ -4,7 +4,7 @@ from pathlib import Path
 from huggingface_hub import HfApi
 
 class HuggingFaceUploader:
-    def __init__(self, hf_token=None, repo_id="caizongxun/crypto-v7-models", models_dir='/content/all_models'):
+    def __init__(self, hf_token=None, repo_id="zongowo111/cpb-models", models_dir='/content/all_models', repo_type="dataset"):
         """
         初始化 Hugging Face 上傳器
         
@@ -12,6 +12,7 @@ class HuggingFaceUploader:
             hf_token: Hugging Face API Token (如果未提供，將從環境變數讀取)
             repo_id: Hugging Face repo ID (format: username/repo-name)
             models_dir: 本地模型目錄路徑
+            repo_type: repo 類型 ("model" 或 "dataset")
         """
         self.hf_token = hf_token or os.getenv('HF_TOKEN')
         if not self.hf_token:
@@ -19,6 +20,7 @@ class HuggingFaceUploader:
         
         self.repo_id = repo_id
         self.models_dir = models_dir
+        self.repo_type = repo_type
         self.api = HfApi(token=self.hf_token)
     
     def get_keras_models(self):
@@ -53,6 +55,7 @@ class HuggingFaceUploader:
         print(f"\n{'='*70}")
         print(f"Starting upload to Hugging Face")
         print(f"Repository: {self.repo_id}")
+        print(f"Repository type: {self.repo_type}")
         print(f"Remote folder: {remote_folder}")
         print(f"{'='*70}\n")
         
@@ -72,7 +75,7 @@ class HuggingFaceUploader:
             self.api.upload_folder(
                 folder_path=self.models_dir,
                 repo_id=self.repo_id,
-                repo_type="model",
+                repo_type=self.repo_type,
                 path_in_repo=remote_folder,
                 ignore_patterns=["*.py", "*.md", "*.txt", "*.json", "*.csv"]  # 只上傳 .keras 檔案
             )
@@ -92,7 +95,7 @@ class HuggingFaceUploader:
         if successful:
             print(f"✓ Successfully uploaded {len(keras_models)} models")
             print(f"\n✓ All models available at:")
-            print(f"  https://huggingface.co/{self.repo_id}/tree/main/{remote_folder}")
+            print(f"  https://huggingface.co/datasets/{self.repo_id}/tree/main/{remote_folder}")
         else:
             print(f"✗ Upload failed")
         
@@ -105,7 +108,7 @@ if __name__ == '__main__':
     
     # 設定參數
     hf_token = os.getenv('HF_TOKEN')  # 從環境變數讀取 token
-    repo_id = "caizongxun/crypto-v7-models"  # 改成你的 repo ID
+    repo_id = "zongowo111/cpb-models"  # 上傳到 zongowo111/cpb-models dataset
     models_dir = '/content/all_models'
     remote_folder = 'models_v7'
     
@@ -114,7 +117,8 @@ if __name__ == '__main__':
         uploader = HuggingFaceUploader(
             hf_token=hf_token,
             repo_id=repo_id,
-            models_dir=models_dir
+            models_dir=models_dir,
+            repo_type="dataset"  # 上傳到 dataset repo
         )
         
         success = uploader.upload_folder(remote_folder=remote_folder)
