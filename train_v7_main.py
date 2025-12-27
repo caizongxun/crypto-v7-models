@@ -18,7 +18,13 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, mean_absolu
 
 import yfinance as yf
 from binance.client import Client
-import talib
+
+try:
+    import talib
+    HAS_TALIB = True
+except ImportError:
+    HAS_TALIB = False
+    print('Warning: talib not available, using fallback implementations')
 
 print('TensorFlow version:', tf.__version__)
 print('GPU Available:', tf.config.list_physical_devices('GPU'))
@@ -110,25 +116,34 @@ class TechnicalIndicators:
     @staticmethod
     def calculate_atr(high, low, close, period=14):
         """Average True Range"""
-        try:
-            return talib.ATR(high, low, close, timeperiod=period)
-        except:
-            tr1 = high - low
-            tr2 = abs(high - close.shift())
-            tr3 = abs(low - close.shift())
-            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-            return tr.rolling(window=period).mean()
+        if HAS_TALIB:
+            try:
+                return talib.ATR(high, low, close, timeperiod=period)
+            except:
+                pass
+        
+        tr1 = high - low
+        tr2 = np.abs(high - np.concatenate([[close.iloc[0]], close.iloc[:-1].values]))
+        tr3 = np.abs(low - np.concatenate([[close.iloc[0]], close.iloc[:-1].values]))
+        tr = pd.concat([
+            pd.Series(tr1),
+            pd.Series(tr2),
+            pd.Series(tr3)
+        ], axis=1).max(axis=1)
+        return tr.rolling(window=period).mean()
     
     @staticmethod
     def calculate_bollinger_bands(close, period=20, num_std=2):
         """Bollinger Bands with upper, middle, lower bands"""
-        try:
-            sma = talib.SMA(close, timeperiod=period)
-            std = close.rolling(window=period).std()
-        except:
+        if HAS_TALIB:
+            try:
+                sma = talib.SMA(close, timeperiod=period)
+            except:
+                sma = close.rolling(window=period).mean()
+        else:
             sma = close.rolling(window=period).mean()
-            std = close.rolling(window=period).std()
         
+        std = close.rolling(window=period).std()
         upper = sma + (num_std * std)
         lower = sma - (num_std * std)
         bandwidth = (upper - lower) / sma
@@ -138,28 +153,34 @@ class TechnicalIndicators:
     @staticmethod
     def calculate_rsi(close, period=14):
         """Relative Strength Index"""
-        try:
-            return talib.RSI(close, timeperiod=period)
-        except:
-            delta = close.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-            rs = gain / loss
-            return 100 - (100 / (1 + rs))
+        if HAS_TALIB:
+            try:
+                return talib.RSI(close, timeperiod=period)
+            except:
+                pass
+        
+        delta = close.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
     
     @staticmethod
     def calculate_macd(close):
         """MACD indicator"""
-        try:
-            macd, signal, hist = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
-            return macd, signal, hist
-        except:
-            ema12 = close.ewm(span=12).mean()
-            ema26 = close.ewm(span=26).mean()
-            macd = ema12 - ema26
-            signal = macd.ewm(span=9).mean()
-            hist = macd - signal
-            return macd, signal, hist
+        if HAS_TALIB:
+            try:
+                macd, signal, hist = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
+                return macd, signal, hist
+            except:
+                pass
+        
+        ema12 = close.ewm(span=12).mean()
+        ema26 = close.ewm(span=26).mean()
+        macd = ema12 - ema26
+        signal = macd.ewm(span=9).mean()
+        hist = macd - signal
+        return macd, signal, hist
     
     @staticmethod
     def calculate_volatility(close, period=20):
@@ -171,17 +192,17 @@ class TechnicalIndicators:
     def add_all_indicators(df):
         """Add all technical indicators to dataframe"""
         df = df.copy()
-        close = df['close'].values.astype(float)
-        high = df['high'].values.astype(float)
-        low = df['low'].values.astype(float)
+        close_series = df['close'].astype(float)
+        high_series = df['high'].astype(float)
+        low_series = df['low'].astype(float)
         
-        df['atr'] = TechnicalIndicators.calculate_atr(high, low, close)
+        df['atr'] = TechnicalIndicators.calculate_atr(high_series, low_series, close_series)
         df['bb_upper'], df['bb_middle'], df['bb_lower'], df['bb_width'] = \
-            TechnicalIndicators.calculate_bollinger_bands(df['close'])
-        df['rsi'] = TechnicalIndicators.calculate_rsi(df['close'])
+            TechnicalIndicators.calculate_bollinger_bands(close_series)
+        df['rsi'] = TechnicalIndicators.calculate_rsi(close_series)
         df['macd'], df['macd_signal'], df['macd_hist'] = \
-            TechnicalIndicators.calculate_macd(df['close'])
-        df['volatility'] = TechnicalIndicators.calculate_volatility(df['close'])
+            TechnicalIndicators.calculate_macd(close_series)
+        df['volatility'] = TechnicalIndicators.calculate_volatility(close_series)
         
         df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
         df['bb_position'] = df['bb_position'].clip(0, 1)
@@ -360,20 +381,20 @@ class TrainingPipeline:
     
     def train_single_model(self, symbol, timeframe, limit=10000):
         """Train model for single cryptocurrency and timeframe"""
-        print(f'\n====== Training {symbol} {timeframe} ======')
+        print(f'Training {symbol} {timeframe}...')
         
         df = self.fetcher.get_data(symbol, timeframe, limit)
         if df is None or len(df) < 100:
             print(f'Insufficient data for {symbol} {timeframe}')
             return False
         
-        print(f'Data shape: {df.shape}')
+        print(f'  Data points: {len(df)}')
         
         df = TechnicalIndicators.add_all_indicators(df)
         df = df.dropna()
         
         if len(df) < 100:
-            print(f'Insufficient data after indicator calculation')
+            print(f'  Insufficient data after indicators')
             return False
         
         preprocessor = DataPreprocessor(sequence_length=60)
@@ -381,7 +402,7 @@ class TrainingPipeline:
         X, y = preprocessor.create_sequences(scaled_data)
         
         if len(X) < 100:
-            print(f'Insufficient sequences for {symbol} {timeframe}')
+            print(f'  Insufficient sequences')
             return False
         
         split_idx = int(len(X) * 0.8)
@@ -391,7 +412,7 @@ class TrainingPipeline:
         model = CryptoV7Model(sequence_length=60, features_dim=len(feature_cols))
         model.build_model()
         
-        print(f'Training samples: {len(X_train)}, Validation samples: {len(X_val)}')
+        print(f'  Train: {len(X_train)}, Val: {len(X_val)}')
         history = model.train(X_train, y_train, X_val, y_val, epochs=100, batch_size=32)
         
         model_path = os.path.join(self.output_dir, f'{symbol}_{timeframe}_v7.h5')
@@ -418,25 +439,29 @@ class TrainingPipeline:
         
         self.models_metadata[f'{symbol}_{timeframe}'] = metadata
         
-        print(f'Model saved: {model_path}')
-        print(f'Validation Metrics - MSE: {mse:.6f}, MAE: {mae:.6f}, MAPE: {mape:.6f}')
+        print(f'  Metrics - MSE: {mse:.6f}, MAE: {mae:.6f}, MAPE: {mape:.2f}%')
         
         return True
     
     def train_all_models(self):
         """Train models for all cryptocurrencies and timeframes"""
+        success_count = 0
+        total_count = len(self.CRYPTO_PAIRS) * len(self.TIMEFRAMES)
+        
         for crypto, symbol in self.CRYPTO_PAIRS.items():
             for timeframe in self.TIMEFRAMES:
                 try:
-                    self.train_single_model(symbol, timeframe)
+                    if self.train_single_model(symbol, timeframe):
+                        success_count += 1
                 except Exception as e:
-                    print(f'Error training {symbol} {timeframe}: {e}')
+                    print(f'Error training {symbol} {timeframe}: {str(e)[:50]}')
         
         metadata_path = os.path.join(self.output_dir, 'metadata_v7.json')
         with open(metadata_path, 'w') as f:
             json.dump(self.models_metadata, f, indent=2)
         
-        print(f'\nAll models trained. Metadata saved to {metadata_path}')
+        print(f'\nTraining completed: {success_count}/{total_count} models')
+        print(f'Metadata saved to {metadata_path}')
         return self.models_metadata
 
 if __name__ == '__main__':
