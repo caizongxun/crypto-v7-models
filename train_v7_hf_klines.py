@@ -19,12 +19,8 @@ from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, mean_absolute_percentage_error
 
-try:
-    from datasets import load_dataset
-    HAS_HF_DATASETS = True
-except ImportError:
-    print("Warning: datasets not installed. Install with: pip install datasets")
-    HAS_HF_DATASETS = False
+import requests
+from io import StringIO
 
 try:
     import talib
@@ -49,122 +45,96 @@ print('TensorFlow version:', tf.__version__)
 print('GPU Available:', tf.config.list_physical_devices('GPU'))
 
 class CryptoDataFetcherHF:
-    """Fetch klines data from Hugging Face datasets instead of Binance"""
+    """Fetch klines data from Hugging Face datasets using direct file download"""
     def __init__(self, data_dir='/content/klines_data', hf_repo_id='zongowo111/cpb-models'):
         self.data_dir = data_dir
         self.hf_repo_id = hf_repo_id
-        self.hf_available = HAS_HF_DATASETS
-        self.cache = {}  # Cache loaded datasets to avoid re-downloading
+        self.hf_url_base = f'https://huggingface.co/datasets/{hf_repo_id}/resolve/main'
         os.makedirs(data_dir, exist_ok=True)
-        if HAS_HF_DATASETS:
-            print("✓ Hugging Face datasets library available")
-        else:
-            raise ImportError("Please install: pip install datasets")
+        print("✓ Hugging Face direct file loader initialized")
     
-    def fetch_from_hf_csv(self, symbol, timeframe):
+    def fetch_from_hf_direct(self, symbol, timeframe):
         """
-        Fetch klines from Hugging Face dataset using new format (NO trust_remote_code)
-        The dataset should have CSV files in structure: klines_binance_us/{SYMBOL}_{timeframe}_binance_us.csv
+        Fetch klines from Hugging Face by directly downloading CSV files
+        Without using load_dataset() which has trust_remote_code issues
         """
-        if not self.hf_available:
-            return None
         try:
-            print(f'    Loading from HF: {self.hf_repo_id}')
+            # 嘗試下載 klines_binance_us 目錄中的 CSV 檔案
+            csv_filename = f'{symbol}_{timeframe}_binance_us.csv'
+            url = f'{self.hf_url_base}/klines_binance_us/{csv_filename}'
             
-            # Load dataset WITHOUT trust_remote_code (it's deprecated)
-            # The dataset should be a standard Parquet-based dataset
-            dataset = load_dataset(
-                self.hf_repo_id,
-                data_files=f'klines_binance_us/{symbol}_{timeframe}_binance_us.csv',
-                split='train',
-                download_mode='force_redownload'
-            )
+            print(f'    Downloading from: {url}')
+            response = requests.get(url, timeout=30)
             
-            # Convert to pandas DataFrame
-            df = dataset.to_pandas()
+            if response.status_code == 404:
+                # 嘗試不同的檔案名稱方式
+                alternative_filename = f'{symbol}_{timeframe}.csv'
+                url = f'{self.hf_url_base}/klines_binance_us/{alternative_filename}'
+                print(f'    File not found, trying: {url}')
+                response = requests.get(url, timeout=30)
             
-            # Ensure required columns exist
+            if response.status_code != 200:
+                print(f'    HTTP {response.status_code}: 下載失效')
+                return None
+            
+            # 解析 CSV
+            df = pd.read_csv(StringIO(response.text))
+            
+            # 確保必要的欄位存在
             required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            
+            # 檢查欄位是否存在(欄位名稱不同的情况)
             available_cols = [col for col in required_cols if col in df.columns]
+            if len(available_cols) < 5:  # 很可能是大写/其他欄位名
+                df.columns = df.columns.str.lower()
+                available_cols = [col for col in required_cols if col in df.columns]
             
+            if len(available_cols) < 5:
+                print(f'    Missing required columns. Available: {list(df.columns)}')
+                return None
+            
+            # 轉換時間戳
             if 'timestamp' in df.columns:
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                try:
+                    df['timestamp'] = pd.to_datetime(df['timestamp'])
+                except:
+                    # 欄位名稱可能不穁
+                    if 'time' in df.columns:
+                        df['timestamp'] = pd.to_datetime(df['time'])
+                    elif 'datetime' in df.columns:
+                        df['timestamp'] = pd.to_datetime(df['datetime'])
             
-            # Convert numeric columns
+            # 轉換數輸欄位
             numeric_cols = ['open', 'high', 'low', 'close', 'volume']
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
+                elif col.lower() in df.columns:
+                    df[col] = pd.to_numeric(df[col.lower()], errors='coerce')
             
             df = df.dropna()
             
-            # Keep only required columns
-            keep_cols = ['timestamp'] + [col for col in numeric_cols if col in df.columns]
-            df = df[keep_cols]
+            if len(df) < 10:
+                print(f'    不足的數據：{len(df)} 行')
+                return None
             
+            print(f'    ✓ 成功下載 {len(df)} 行數據')
             return df
             
         except Exception as e:
-            print(f'  HF CSV fetch error: {str(e)[:100]}')
-            return None
-    
-    def fetch_from_hf_parquet(self, symbol, timeframe):
-        """
-        Alternative: Try loading as parquet if CSV method fails
-        """
-        if not self.hf_available:
-            return None
-        try:
-            print(f'    Trying Parquet format from HF: {self.hf_repo_id}')
-            
-            # Try loading parquet files
-            dataset = load_dataset(
-                self.hf_repo_id,
-                data_files=f'klines_binance_us/{symbol}_{timeframe}_binance_us.parquet',
-                split='train'
-            )
-            
-            df = dataset.to_pandas()
-            
-            # Ensure required columns exist
-            required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-            
-            if 'timestamp' in df.columns:
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
-            
-            # Convert numeric columns
-            numeric_cols = ['open', 'high', 'low', 'close', 'volume']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            df = df.dropna()
-            
-            # Keep only required columns
-            keep_cols = ['timestamp'] + [col for col in numeric_cols if col in df.columns]
-            df = df[keep_cols]
-            
-            return df
-            
-        except Exception as e:
-            print(f'  HF Parquet fetch error: {str(e)[:100]}')
+            print(f'  下載錯誤: {str(e)[:100]}')
             return None
     
     def get_data(self, symbol, timeframe, limit=10000):
         """
-        Get data from Hugging Face, trying multiple format options
+        Get data from Hugging Face
         """
-        # Try CSV first
-        df = self.fetch_from_hf_csv(symbol, timeframe)
-        
-        # Try Parquet if CSV failed
-        if df is None:
-            df = self.fetch_from_hf_parquet(symbol, timeframe)
+        df = self.fetch_from_hf_direct(symbol, timeframe)
         
         if df is None or len(df) < 100:
             return None
         
-        # Apply limit if needed
+        # 應用限制
         if len(df) > limit:
             df = df.iloc[-limit:].reset_index(drop=True)
         
@@ -175,7 +145,7 @@ class CryptoDataFetcherHF:
         """Save klines to CSV for backup"""
         filename = os.path.join(self.data_dir, f'{symbol}_{timeframe}_{source}.csv')
         df.to_csv(filename, index=False)
-        print(f'  → Saved {len(df)} klines to {filename}')
+        print(f'  → 保存 {len(df)} 行數據到 {filename}')
 
 class TechnicalIndicators:
     @staticmethod
@@ -235,7 +205,6 @@ class TechnicalIndicators:
         df['rsi'] = TechnicalIndicators.calculate_rsi(close)
         df['macd'], df['macd_signal'], df['macd_hist'] = TechnicalIndicators.calculate_macd(close)
         df['volatility'] = TechnicalIndicators.calculate_volatility(close)
-        # 修復 bb_position 計算 - 確保賦值的是單一列
         bb_position = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-8)
         df['bb_position'] = bb_position.clip(0, 1).values
         return df
