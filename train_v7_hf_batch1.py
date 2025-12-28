@@ -131,7 +131,7 @@ class TechnicalIndicators:
         return pd.Series(tr).rolling(window=period).mean().values
     
     @staticmethod
-    def def_bollinger_bands(close, period=20, num_std=2):
+    def calculate_bollinger_bands(close, period=20, num_std=2):
         close = np.array(close).flatten()
         sma = pd.Series(close).rolling(window=period).mean().values
         std = pd.Series(close).rolling(window=period).std().values
@@ -172,7 +172,7 @@ class TechnicalIndicators:
         high = df['high'].astype(float).values
         low = df['low'].astype(float).values
         df['atr'] = TechnicalIndicators.calculate_atr(high, low, close)
-        df['bb_upper'], df['bb_middle'], df['bb_lower'], df['bb_width'] = TechnicalIndicators.def_bollinger_bands(close)
+        df['bb_upper'], df['bb_middle'], df['bb_lower'], df['bb_width'] = TechnicalIndicators.calculate_bollinger_bands(close)
         df['rsi'] = TechnicalIndicators.calculate_rsi(close)
         df['macd'], df['macd_signal'], df['macd_hist'] = TechnicalIndicators.calculate_macd(close)
         df['volatility'] = TechnicalIndicators.calculate_volatility(close)
@@ -348,8 +348,8 @@ class TrainingPipelineBatch1:
         model = CryptoV7Model(sequence_length=60, features_dim=len(feature_cols))
         model.build_model()
         history = model.train(
-            X_train, y_open_train, y_close_train, y_train_high, y_train_low,
-            X_val, y_open_val, y_close_val, y_val_high, y_val_low,
+            X_train, y_open_train, y_close_train, y_high_train, y_low_train,
+            X_val, y_open_val, y_close_val, y_high_val, y_low_val,
             epochs=100, batch_size=32
         )
         print('✓ Training complete')
