@@ -45,33 +45,27 @@ print('TensorFlow version:', tf.__version__)
 print('GPU Available:', tf.config.list_physical_devices('GPU'))
 
 class CryptoDataFetcherHF:
-    """Fetch klines data from Hugging Face datasets using direct file download"""
+    """從 Hugging Face 數據集下載 klines 數據"""
     def __init__(self, data_dir='/content/klines_data', hf_repo_id='zongowo111/cpb-models'):
         self.data_dir = data_dir
         self.hf_repo_id = hf_repo_id
+        # HF 檔案結構: klines_binance_us/{SYMBOL}/{SYMBOL}_{timeframe}_binance_us.csv
         self.hf_url_base = f'https://huggingface.co/datasets/{hf_repo_id}/resolve/main'
         os.makedirs(data_dir, exist_ok=True)
-        print("✓ Hugging Face direct file loader initialized")
+        print("✓ Hugging Face 直接檔案加載器已初始化")
     
     def fetch_from_hf_direct(self, symbol, timeframe):
         """
-        Fetch klines from Hugging Face by directly downloading CSV files
-        Without using load_dataset() which has trust_remote_code issues
+        從 Hugging Face 直接下載 CSV 檔案
+        檔案結構: klines_binance_us/{SYMBOL}/{SYMBOL}_{timeframe}_binance_us.csv
         """
         try:
-            # 嘗試下載 klines_binance_us 目錄中的 CSV 檔案
+            # 正確的 URL 結構
             csv_filename = f'{symbol}_{timeframe}_binance_us.csv'
-            url = f'{self.hf_url_base}/klines_binance_us/{csv_filename}'
+            url = f'{self.hf_url_base}/klines_binance_us/{symbol}/{csv_filename}'
             
-            print(f'    Downloading from: {url}')
+            print(f'    下載: {url}')
             response = requests.get(url, timeout=30)
-            
-            if response.status_code == 404:
-                # 嘗試不同的檔案名稱方式
-                alternative_filename = f'{symbol}_{timeframe}.csv'
-                url = f'{self.hf_url_base}/klines_binance_us/{alternative_filename}'
-                print(f'    File not found, trying: {url}')
-                response = requests.get(url, timeout=30)
             
             if response.status_code != 200:
                 print(f'    HTTP {response.status_code}: 下載失效')
@@ -83,14 +77,15 @@ class CryptoDataFetcherHF:
             # 確保必要的欄位存在
             required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
             
-            # 檢查欄位是否存在(欄位名稱不同的情况)
+            # 檢查欄位是否存在
             available_cols = [col for col in required_cols if col in df.columns]
-            if len(available_cols) < 5:  # 很可能是大写/其他欄位名
+            if len(available_cols) < 5:
+                # 大寫漄位名或其他情况
                 df.columns = df.columns.str.lower()
                 available_cols = [col for col in required_cols if col in df.columns]
             
             if len(available_cols) < 5:
-                print(f'    Missing required columns. Available: {list(df.columns)}')
+                print(f'    缺少必需欄位。可用: {list(df.columns)}')
                 return None
             
             # 轉換時間戳
@@ -98,7 +93,6 @@ class CryptoDataFetcherHF:
                 try:
                     df['timestamp'] = pd.to_datetime(df['timestamp'])
                 except:
-                    # 欄位名稱可能不穁
                     if 'time' in df.columns:
                         df['timestamp'] = pd.to_datetime(df['time'])
                     elif 'datetime' in df.columns:
@@ -109,16 +103,14 @@ class CryptoDataFetcherHF:
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
-                elif col.lower() in df.columns:
-                    df[col] = pd.to_numeric(df[col.lower()], errors='coerce')
             
             df = df.dropna()
             
             if len(df) < 10:
-                print(f'    不足的數據：{len(df)} 行')
+                print(f'    數據不足: {len(df)} 行')
                 return None
             
-            print(f'    ✓ 成功下載 {len(df)} 行數據')
+            print(f'    ✓ 成功下載 {len(df)} 行')
             return df
             
         except Exception as e:
@@ -127,7 +119,7 @@ class CryptoDataFetcherHF:
     
     def get_data(self, symbol, timeframe, limit=10000):
         """
-        Get data from Hugging Face
+        從 Hugging Face 取得數據
         """
         df = self.fetch_from_hf_direct(symbol, timeframe)
         
@@ -142,7 +134,7 @@ class CryptoDataFetcherHF:
         return df
     
     def save_klines(self, symbol, timeframe, df, source='huggingface'):
-        """Save klines to CSV for backup"""
+        """保存 klines 到 CSV"""
         filename = os.path.join(self.data_dir, f'{symbol}_{timeframe}_{source}.csv')
         df.to_csv(filename, index=False)
         print(f'  → 保存 {len(df)} 行數據到 {filename}')
