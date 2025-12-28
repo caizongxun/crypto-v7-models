@@ -76,14 +76,13 @@ def upload_models_to_hf():
         
         print(f"\u6b63在上傳 {local_models_dir} 到 {repo_id}/{remote_folder}...\n")
         
-        # 执行上傳
+        # 基本參數上傳
         repo_url = api.upload_folder(
             folder_path=local_models_dir,
             repo_id=repo_id,
             repo_type="dataset",
             path_in_repo=remote_folder,
-            commit_message="新增：V8 訓練完成的 40 個 LSTM 模型 (20 幣種 × 2 時間框架)",
-            private=False
+            commit_message="新增：V8 訓練完成的 40 個 LSTM 模型 (20 幣種 × 2 時間框架)"
         )
         
         print("\n" + "="*80)
@@ -91,14 +90,14 @@ def upload_models_to_hf():
         print("="*80)
         print(f"\u2713 遮端位置: https://huggingface.co/datasets/{repo_id}/tree/main/{remote_folder}")
         print(f"\u2713 Commit URL: {repo_url}")
-        print(f"\u2713 總自稚檔案數: {file_count}")
+        print(f"\u2713 總自稚檔案数: {file_count}")
         print("="*80)
         
         return True
         
     except Exception as e:
         print(f"\u2717 上傳失敗: {str(e)}")
-        print(f"\u2717 錯誤詳詳: {type(e).__name__}")
+        print(f"\u2717 錯誤類型: {type(e).__name__}")
         
         # 提供更詳的錯誤信息
         if "401" in str(e) or "Unauthorized" in str(e):
