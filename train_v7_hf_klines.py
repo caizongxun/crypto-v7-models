@@ -50,39 +50,38 @@ print('GPU Available:', tf.config.list_physical_devices('GPU'))
 
 class CryptoDataFetcherHF:
     """Fetch klines data from Hugging Face datasets instead of Binance"""
-    def __init__(self, data_dir='/content/klines_data'):
+    def __init__(self, data_dir='/content/klines_data', hf_repo_id='zongowo111/cpb-models'):
         self.data_dir = data_dir
+        self.hf_repo_id = hf_repo_id
         self.hf_available = HAS_HF_DATASETS
+        self.cache = {}  # Cache loaded datasets to avoid re-downloading
         os.makedirs(data_dir, exist_ok=True)
         if HAS_HF_DATASETS:
             print("✓ Hugging Face datasets library available")
         else:
             raise ImportError("Please install: pip install datasets")
     
-    def fetch_from_hf(self, symbol, timeframe):
+    def fetch_from_hf_csv(self, symbol, timeframe):
         """
-        Fetch klines from Hugging Face dataset
-        Expected dataset structure: dataset with symbol and timeframe columns
+        Fetch klines from Hugging Face dataset using new format (NO trust_remote_code)
+        The dataset should have CSV files in structure: klines_binance_us/{SYMBOL}_{timeframe}_binance_us.csv
         """
         if not self.hf_available:
             return None
         try:
-            # Load dataset from Hugging Face (user provides repo_id)
-            # Example: load_dataset('zongowo111/cpb-models', split='train')
-            repo_id = 'zongowo111/cpb-models'
-            print(f'    Loading from HF: {repo_id}')
+            print(f'    Loading from HF: {self.hf_repo_id}')
             
-            dataset = load_dataset(repo_id, split='train', trust_remote_code=True, download_mode='force_redownload')
-            
-            # Filter by symbol and timeframe
-            filtered = dataset.filter(lambda x: x.get('symbol') == symbol and x.get('timeframe') == timeframe)
-            
-            if len(filtered) == 0:
-                print(f'    No data found for {symbol} {timeframe}')
-                return None
+            # Load dataset WITHOUT trust_remote_code (it's deprecated)
+            # The dataset should be a standard Parquet-based dataset
+            dataset = load_dataset(
+                self.hf_repo_id,
+                data_files=f'klines_binance_us/{symbol}_{timeframe}_binance_us.csv',
+                split='train',
+                download_mode='force_redownload'
+            )
             
             # Convert to pandas DataFrame
-            df = filtered.to_pandas()
+            df = dataset.to_pandas()
             
             # Ensure required columns exist
             required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
@@ -106,14 +105,61 @@ class CryptoDataFetcherHF:
             return df
             
         except Exception as e:
-            print(f'  HF fetch error: {str(e)[:80]}')
+            print(f'  HF CSV fetch error: {str(e)[:100]}')
+            return None
+    
+    def fetch_from_hf_parquet(self, symbol, timeframe):
+        """
+        Alternative: Try loading as parquet if CSV method fails
+        """
+        if not self.hf_available:
+            return None
+        try:
+            print(f'    Trying Parquet format from HF: {self.hf_repo_id}')
+            
+            # Try loading parquet files
+            dataset = load_dataset(
+                self.hf_repo_id,
+                data_files=f'klines_binance_us/{symbol}_{timeframe}_binance_us.parquet',
+                split='train'
+            )
+            
+            df = dataset.to_pandas()
+            
+            # Ensure required columns exist
+            required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            # Convert numeric columns
+            numeric_cols = ['open', 'high', 'low', 'close', 'volume']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            df = df.dropna()
+            
+            # Keep only required columns
+            keep_cols = ['timestamp'] + [col for col in numeric_cols if col in df.columns]
+            df = df[keep_cols]
+            
+            return df
+            
+        except Exception as e:
+            print(f'  HF Parquet fetch error: {str(e)[:100]}')
             return None
     
     def get_data(self, symbol, timeframe, limit=10000):
         """
-        Get data from Hugging Face, with optional limit
+        Get data from Hugging Face, trying multiple format options
         """
-        df = self.fetch_from_hf(symbol, timeframe)
+        # Try CSV first
+        df = self.fetch_from_hf_csv(symbol, timeframe)
+        
+        # Try Parquet if CSV failed
+        if df is None:
+            df = self.fetch_from_hf_parquet(symbol, timeframe)
         
         if df is None or len(df) < 100:
             return None
@@ -304,10 +350,11 @@ class TrainingPipeline:
     CRYPTO_PAIRS = {'BTC': 'BTCUSDT', 'ETH': 'ETHUSDT', 'BNB': 'BNBUSDT', 'XRP': 'XRPUSDT', 'ADA': 'ADAUSDT', 'DOGE': 'DOGEUSDT', 'SOL': 'SOLUSDT', 'LINK': 'LINKUSDT', 'MATIC': 'MATICUSDT', 'AVAX': 'AVAXUSDT', 'UNI': 'UNIUSDT', 'LTC': 'LTCUSDT', 'BCH': 'BCHUSDT', 'ETC': 'ETCUSDT', 'XLM': 'XLMUSDT', 'VET': 'VETUSDT', 'FIL': 'FILUSDT', 'THETA': 'THETAUSDT', 'NEAR': 'NEARUSDT', 'APE': 'APEUSDT'}
     TIMEFRAMES = ['15m', '1h']
     
-    def __init__(self, output_dir='/content/all_models', klines_dir='/content/klines_data'):
+    def __init__(self, output_dir='/content/all_models', klines_dir='/content/klines_data', hf_repo_id='zongowo111/cpb-models'):
         self.output_dir = output_dir
         self.klines_dir = klines_dir
-        self.fetcher = CryptoDataFetcherHF(data_dir=klines_dir)
+        self.hf_repo_id = hf_repo_id
+        self.fetcher = CryptoDataFetcherHF(data_dir=klines_dir, hf_repo_id=hf_repo_id)
         self.models_metadata = {}
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(klines_dir, exist_ok=True)
@@ -380,6 +427,7 @@ class TrainingPipeline:
             'val_mape': float(mape),
             'model_path': model_path,
             'data_source': 'huggingface',
+            'hf_repo': self.hf_repo_id,
             'timestamp': datetime.now().isoformat()
         }
         self.models_metadata[f'{symbol}_{timeframe}'] = metadata
@@ -395,15 +443,20 @@ class TrainingPipeline:
                         success_count += 1
                 except Exception as e:
                     print(f'✗ Error: {str(e)[:80]}')
+                    traceback.print_exc()
         metadata_path = os.path.join(self.output_dir, 'metadata_v7_hf.json')
         with open(metadata_path, 'w') as f:
             json.dump(self.models_metadata, f, indent=2)
         print(f'\n\n✓ Training completed: {success_count}/{total_count} models')
         print(f'✓ Klines saved in: {self.klines_dir}')
         print(f'✓ Models saved in: {self.output_dir}')
-        print(f'✓ Data source: Hugging Face datasets')
+        print(f'✓ Data source: Hugging Face datasets ({self.hf_repo_id})')
         return self.models_metadata
 
 if __name__ == '__main__':
-    pipeline = TrainingPipeline(output_dir='/content/all_models', klines_dir='/content/klines_data')
+    pipeline = TrainingPipeline(
+        output_dir='/content/all_models',
+        klines_dir='/content/klines_data',
+        hf_repo_id='zongowo111/cpb-models'
+    )
     pipeline.train_all_models()
