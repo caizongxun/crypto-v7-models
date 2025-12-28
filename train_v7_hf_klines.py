@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 import warnings
 import logging
 import traceback
-import requests
 warnings.filterwarnings('ignore')
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
 
@@ -19,6 +18,13 @@ from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, mean_absolute_percentage_error
+
+try:
+    from datasets import load_dataset
+    HAS_HF_DATASETS = True
+except ImportError:
+    print("Warning: datasets not installed. Install with: pip install datasets")
+    HAS_HF_DATASETS = False
 
 try:
     import talib
@@ -42,111 +48,88 @@ else:
 print('TensorFlow version:', tf.__version__)
 print('GPU Available:', tf.config.list_physical_devices('GPU'))
 
-class HFKlinesDataFetcher:
-    """從 Hugging Face 下載 klines 資料的獲取器"""
+class CryptoDataFetcherHF:
+    """Fetch klines data from Hugging Face datasets instead of Binance"""
     def __init__(self, data_dir='/content/klines_data'):
-        self.hf_base_url = "https://huggingface.co/datasets/zongowo111/cpb-models/resolve/main/klines_binance_us"
-        self.summary_file = "klines_summary_binance_us.json"
-        self.symbols = []
-        self.data_index = {}
         self.data_dir = data_dir
+        self.hf_available = HAS_HF_DATASETS
         os.makedirs(data_dir, exist_ok=True)
-        self._fetch_summary_json()
+        if HAS_HF_DATASETS:
+            print("✓ Hugging Face datasets library available")
+        else:
+            raise ImportError("Please install: pip install datasets")
     
-    def _fetch_summary_json(self):
-        """從 Hugging Face 下載 JSON 摘要檔案"""
-        url = f"{self.hf_base_url}/{self.summary_file}"
-        print(f"正在從 Hugging Face 下載摘要: {url}")
-        
+    def fetch_from_hf(self, symbol, timeframe):
+        """
+        Fetch klines from Hugging Face dataset
+        Expected dataset structure: dataset with symbol and timeframe columns
+        """
+        if not self.hf_available:
+            return None
         try:
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+            # Load dataset from Hugging Face (user provides repo_id)
+            # Example: load_dataset('zongowo111/cpb-models', split='train')
+            repo_id = 'zongowo111/cpb-models'
+            print(f'    Loading from HF: {repo_id}')
             
-            self.data_index = data.get('summary', {})
-            self.symbols = list(self.data_index.keys())
+            dataset = load_dataset(repo_id, split='train', trust_remote_code=True, download_mode='force_redownload')
             
-            print(f"✓ 成功加載 {len(self.symbols)} 個幣種")
-            print(f"幣種列表: {', '.join(self.symbols)}")
+            # Filter by symbol and timeframe
+            filtered = dataset.filter(lambda x: x.get('symbol') == symbol and x.get('timeframe') == timeframe)
+            
+            if len(filtered) == 0:
+                print(f'    No data found for {symbol} {timeframe}')
+                return None
+            
+            # Convert to pandas DataFrame
+            df = filtered.to_pandas()
+            
+            # Ensure required columns exist
+            required_cols = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            available_cols = [col for col in required_cols if col in df.columns]
+            
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            # Convert numeric columns
+            numeric_cols = ['open', 'high', 'low', 'close', 'volume']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            df = df.dropna()
+            
+            # Keep only required columns
+            keep_cols = ['timestamp'] + [col for col in numeric_cols if col in df.columns]
+            df = df[keep_cols]
+            
+            return df
             
         except Exception as e:
-            print(f"✗ 下載 JSON 失敗: {e}")
-            raise
-    
-    def _get_klines_url(self, symbol, timeframe):
-        """生成 Klines CSV 檔案的 Hugging Face URL"""
-        if symbol not in self.data_index:
+            print(f'  HF fetch error: {str(e)[:80]}')
             return None
-        if timeframe not in self.data_index[symbol]:
-            return None
-        csv_path = self.data_index[symbol][timeframe]['csv_path']
-        url = f"{self.hf_base_url}/{csv_path}"
-        return url
     
     def get_data(self, symbol, timeframe, limit=10000):
-        """下載並返回單個 symbol/timeframe 的 klines 資料"""
-        try:
-            url = self._get_klines_url(symbol, timeframe)
-            if not url:
-                print(f"  ✗ 無法找到 {symbol} {timeframe} 的 URL")
-                return None
-            
-            print(f"  ← 從 Hugging Face 下載 {symbol} {timeframe} 資料...")
-            
-            response = requests.get(url, timeout=30)
-            response.raise_for_status()
-            
-            # 從 CSV 內容讀取
-            from io import StringIO
-            df = pd.read_csv(StringIO(response.text))
-            
-            if df.empty:
-                print(f"  ✗ 資料為空")
-                return None
-            
-            # 限制資料行數
-            if len(df) > limit:
-                df = df.iloc[-limit:].reset_index(drop=True)
-            
-            # 確保必要的列存在
-            required_cols = ['open', 'high', 'low', 'close', 'volume']
-            missing_cols = [col for col in required_cols if col not in df.columns]
-            if missing_cols:
-                print(f"  ✗ 缺少列: {missing_cols}")
-                return None
-            
-            # 添加時間戳列（如果不存在）
-            if 'timestamp' not in df.columns and 'open_time' in df.columns:
-                df.rename(columns={'open_time': 'timestamp'}, inplace=True)
-            elif 'timestamp' not in df.columns:
-                # 生成時間戳
-                df['timestamp'] = pd.date_range(end=datetime.now(), periods=len(df), freq='15min' if timeframe == '15m' else '1h')
-            
-            # 轉換資料類型
-            df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
-            
-            print(f"  ✓ 成功下載 {len(df)} 行資料")
-            
-            # 保存到本地
-            self._save_klines(symbol, timeframe, df, source='huggingface')
-            
-            return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+        """
+        Get data from Hugging Face, with optional limit
+        """
+        df = self.fetch_from_hf(symbol, timeframe)
         
-        except Exception as e:
-            print(f"  ✗ 下載失敗 {symbol} {timeframe}: {e}")
+        if df is None or len(df) < 100:
             return None
+        
+        # Apply limit if needed
+        if len(df) > limit:
+            df = df.iloc[-limit:].reset_index(drop=True)
+        
+        self.save_klines(symbol, timeframe, df, source='huggingface')
+        return df
     
-    def _save_klines(self, symbol, timeframe, df, source='huggingface'):
-        """保存 klines 資料到本地"""
-        symbol_dir = os.path.join(self.data_dir, symbol)
-        os.makedirs(symbol_dir, exist_ok=True)
-        filename = os.path.join(symbol_dir, f'{symbol}_{timeframe}_{source}.csv')
+    def save_klines(self, symbol, timeframe, df, source='huggingface'):
+        """Save klines to CSV for backup"""
+        filename = os.path.join(self.data_dir, f'{symbol}_{timeframe}_{source}.csv')
         df.to_csv(filename, index=False)
-        print(f'  → 保存到 {filename}')
-    
-    def get_symbol_list(self):
-        """取得所有可用的幣種列表"""
-        return self.symbols
+        print(f'  → Saved {len(df)} klines to {filename}')
 
 class TechnicalIndicators:
     @staticmethod
@@ -206,6 +189,7 @@ class TechnicalIndicators:
         df['rsi'] = TechnicalIndicators.calculate_rsi(close)
         df['macd'], df['macd_signal'], df['macd_hist'] = TechnicalIndicators.calculate_macd(close)
         df['volatility'] = TechnicalIndicators.calculate_volatility(close)
+        # 修復 bb_position 計算 - 確保賦值的是單一列
         bb_position = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-8)
         df['bb_position'] = bb_position.clip(0, 1).values
         return df
@@ -317,19 +301,20 @@ class CryptoV7Model:
             self.model.save(filepath)
 
 class TrainingPipeline:
+    CRYPTO_PAIRS = {'BTC': 'BTCUSDT', 'ETH': 'ETHUSDT', 'BNB': 'BNBUSDT', 'XRP': 'XRPUSDT', 'ADA': 'ADAUSDT', 'DOGE': 'DOGEUSDT', 'SOL': 'SOLUSDT', 'LINK': 'LINKUSDT', 'MATIC': 'MATICUSDT', 'AVAX': 'AVAXUSDT', 'UNI': 'UNIUSDT', 'LTC': 'LTCUSDT', 'BCH': 'BCHUSDT', 'ETC': 'ETCUSDT', 'XLM': 'XLMUSDT', 'VET': 'VETUSDT', 'FIL': 'FILUSDT', 'THETA': 'THETAUSDT', 'NEAR': 'NEARUSDT', 'APE': 'APEUSDT'}
     TIMEFRAMES = ['15m', '1h']
     
     def __init__(self, output_dir='/content/all_models', klines_dir='/content/klines_data'):
         self.output_dir = output_dir
         self.klines_dir = klines_dir
-        self.fetcher = HFKlinesDataFetcher(data_dir=klines_dir)
+        self.fetcher = CryptoDataFetcherHF(data_dir=klines_dir)
         self.models_metadata = {}
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(klines_dir, exist_ok=True)
     
     def train_single_model(self, symbol, timeframe, limit=10000):
         print(f'\nTraining {symbol} {timeframe}...')
-        print(f'  ← Fetching klines from Hugging Face...', end=' ', flush=True)
+        print(f'  ← Fetching klines from HF...', end=' ', flush=True)
         df = self.fetcher.get_data(symbol, timeframe, limit)
         if df is None or len(df) < 100:
             print('✗ No data')
@@ -364,14 +349,14 @@ class TrainingPipeline:
         model = CryptoV7Model(sequence_length=60, features_dim=len(feature_cols))
         model.build_model()
         history = model.train(
-            X_train, y_open_train, y_close_train, y_high_train, y_train_low,
-            X_val, y_val_open, y_val_close, y_val_high, y_val_low,
+            X_train, y_open_train, y_close_train, y_high_train, y_low_train,
+            X_val, y_open_val, y_close_val, y_high_val, y_val_val,
             epochs=100, batch_size=32
         )
         print('✓ Training complete')
         
         print(f'  ← Saving model...', end=' ', flush=True)
-        model_path = os.path.join(self.output_dir, f'{symbol}_{timeframe}_v7.keras')
+        model_path = os.path.join(self.output_dir, f'{symbol}_{timeframe}_v7_hf.keras')
         model.save(model_path)
         print(f'✓ Saved to {model_path}')
         
@@ -401,33 +386,22 @@ class TrainingPipeline:
         return True
     
     def train_all_models(self):
-        symbols = self.fetcher.get_symbol_list()
-        total_count = len(symbols) * len(self.TIMEFRAMES)
         success_count = 0
-        
-        print("\n" + "="*70)
-        print("開始訓練所有模型 (資料來源: Hugging Face)")
-        print("="*70)
-        
-        for symbol in symbols:
+        total_count = len(self.CRYPTO_PAIRS) * len(self.TIMEFRAMES)
+        for crypto, symbol in self.CRYPTO_PAIRS.items():
             for timeframe in self.TIMEFRAMES:
                 try:
                     if self.train_single_model(symbol, timeframe):
                         success_count += 1
                 except Exception as e:
                     print(f'✗ Error: {str(e)[:80]}')
-                    traceback.print_exc()
-        
         metadata_path = os.path.join(self.output_dir, 'metadata_v7_hf.json')
         with open(metadata_path, 'w') as f:
             json.dump(self.models_metadata, f, indent=2)
-        
-        print(f'\n\n{"="*70}')
-        print(f'✓ 訓練完成: {success_count}/{total_count} models')
-        print(f'✓ Klines 保存位置: {self.klines_dir}')
-        print(f'✓ 模型保存位置: {self.output_dir}')
-        print(f'✓ 元數據保存位置: {metadata_path}')
-        print(f'{"="*70}')
+        print(f'\n\n✓ Training completed: {success_count}/{total_count} models')
+        print(f'✓ Klines saved in: {self.klines_dir}')
+        print(f'✓ Models saved in: {self.output_dir}')
+        print(f'✓ Data source: Hugging Face datasets')
         return self.models_metadata
 
 if __name__ == '__main__':
